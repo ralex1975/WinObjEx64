@@ -1,20 +1,49 @@
-v1.4.7
-corrections
+v1.7.0
+code can now be compiled as C++
+added W32pServiceTable view
+added process list dialog (extras)
+added Callback object type callbacks list (Properties->Object)
+added callbacks viewer for certain callback types (registry, ps, ob, kebugcheck, se, dbg, po, io etc)
+reimplemented "type" object type view (added missing fields from w10+)
+reimplemented service tables extraction code
 
-v1.4.6
-Parition, DxghCurrentDxgProcessObject objects description added
+v1.6.0
+ported to msvc 2017 (with backward compatibility to 2015)
+reimplemented private namespaces lookup
+object directory dump reflect Win10 changes
+added alpc port dump and additional dialog
+treelist control updated
+private namespaces dialog updated
+usershareddata dialog updated
+internal rearrange
+merge pull request #7, fix Job object process list display
+multiple Wine Staging fixes
+rtls updated 
+
+v1.5.5
+tweaked PTL display
+
+v1.5.4
+added display of Process Trust Label for Directory object type
+
+v1.5.3
+OpenWindowStation fix
+
+v1.5.2
+internal rearrange
+
+v1.5.1
+bugfixes
+
+v1.5.0
+added Partition, DxgkCurrentDxgProcessObject objects description
 added mailslots viewer dialog
-some code revision and bugfixes
-
-v1.4.5 hotfix
-fixed wine behavior along with some bugs
-
-v1.4.5
-added file properties for drivers (menu -> extras -> Drivers) 
-added FltConnectionPort object dump 
-switched to hde instead of ldasm 
-rtls updated, switched to VS2015 U3 
-note: Windows 10 RS1 (14393 release) supported as well as TH1(10240)/TH2(10586) 
+added file properties for drivers (menu -> extras -> Drivers)
+added FltConnectionPort object dump
+switched to hde instead of ldasm
+fixed Wine behavior along with some bugs
+rtls updated, switched to VS2015 U3
+note: Windows 10 RS2 (15063), RS1 (14393) supported as well as TH1(10240)/TH2(10586), RS3 supported (16288+ build)
 
 v 1.4.0
 drivers list and dump (menu -> extras)
@@ -37,3 +66,6 @@ added descriptions for more object types
 added named pipes dialog (menu -> extras) 
 added information for IoCompletion object type, including structured object body dump2 
 some code revision and corrections 
+
+v 1.0.0 (Feb 23, 2015)
+initial release

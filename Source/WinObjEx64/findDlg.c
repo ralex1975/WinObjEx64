@@ -1,12 +1,12 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2015 - 2017
+*  (C) COPYRIGHT AUTHORS, 2015 - 2018
 *
 *  TITLE:       FINDDLG.C
 *
-*  VERSION:     1.46
+*  VERSION:     1.70
 *
-*  DATE:        02 Mar 2017
+*  DATE:        30 Nov 2018
 *
 * THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
 * ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED
@@ -60,8 +60,8 @@ INT CALLBACK FindDlgCompareFunc(
         nResult = _strcmpi(lpItem1, lpItem2);
 
 Done:
-    if (lpItem1) HeapFree(GetProcessHeap(), 0, lpItem1);
-    if (lpItem2) HeapFree(GetProcessHeap(), 0, lpItem2);
+    if (lpItem1) supHeapFree(lpItem1);
+    if (lpItem2) supHeapFree(lpItem2);
     return nResult;
 }
 
@@ -88,7 +88,7 @@ VOID FindDlgAddListItem(
     lvitem.iSubItem = 0;
     lvitem.pszText = ObjectName;
     lvitem.iItem = 0;
-    lvitem.iImage = supGetObjectIndexByTypeName(TypeName);
+    lvitem.iImage = ObManagerGetImageIndexByTypeName(TypeName);
     index = ListView_InsertItem(hList, &lvitem);
 
     lvitem.mask = LVIF_TEXT;
@@ -107,7 +107,7 @@ VOID FindDlgAddListItem(
 *
 */
 VOID FindDlgResize(
-    HWND hwndDlg
+    _In_ HWND hwndDlg
 )
 {
     RECT  r1, r2;
@@ -216,15 +216,11 @@ VOID FindDlgResize(
 *
 */
 VOID FindDlgHandleNotify(
-    LPNMLISTVIEW	nhdr
+    _In_ LPNMLISTVIEW nhdr
 )
 {
-    INT      c, k;
+    INT      nImageIndex;
     LPWSTR   lpItemText;
-    LVCOLUMN col;
-
-    if (nhdr == NULL)
-        return;
 
     if (nhdr->hdr.idFrom != ID_SEARCH_LIST)
         return;
@@ -238,7 +234,7 @@ VOID FindDlgHandleNotify(
         lpItemText = supGetItemText(nhdr->hdr.hwndFrom, nhdr->iItem, 0, NULL);
         if (lpItemText) {
             ListToObject(lpItemText);
-            HeapFree(GetProcessHeap(), 0, lpItemText);
+            supHeapFree(lpItemText);
         }
         break;
 
@@ -247,20 +243,18 @@ VOID FindDlgHandleNotify(
         FindDlgSortColumn = ((NMLISTVIEW *)nhdr)->iSubItem;
         ListView_SortItemsEx(FindDlgList, &FindDlgCompareFunc, FindDlgSortColumn);
 
-        RtlSecureZeroMemory(&col, sizeof(col));
-        col.mask = LVCF_IMAGE;
-        col.iImage = -1;
-
-        for (c = 0; c < 2; c++)
-            ListView_SetColumn(FindDlgList, c, &col);
-
-        k = ImageList_GetImageCount(ListViewImages);
+        nImageIndex = ImageList_GetImageCount(g_ListViewImages);
         if (bFindDlgSortInverse)
-            col.iImage = k - 2;
+            nImageIndex -= 2;
         else
-            col.iImage = k - 1;
+            nImageIndex -= 1;
 
-        ListView_SetColumn(FindDlgList, ((NMLISTVIEW *)nhdr)->iSubItem, &col);
+        supUpdateLvColumnHeaderImage(
+            FindDlgList,
+            2,
+            FindDlgSortColumn,
+            nImageIndex);
+
         break;
 
     default:
@@ -314,7 +308,7 @@ INT_PTR CALLBACK FindDlgProc(
         if (FindDlgGrip) DestroyWindow(FindDlgGrip);
         DestroyWindow(hwndDlg);
         FindDialog = NULL;
-        g_wobjDialogs[WOBJ_FINDDLG_IDX] = NULL;
+        g_WinObj.AuxDialogs[wobjFindDlgId] = NULL;
         return TRUE;
 
     case WM_COMMAND:
@@ -331,8 +325,8 @@ INT_PTR CALLBACK FindDlgProc(
             ListView_DeleteAllItems(FindDlgList);
             RtlSecureZeroMemory(&search_string, sizeof(search_string));
             RtlSecureZeroMemory(&type_name, sizeof(type_name));
-            SendMessageW(GetDlgItem(hwndDlg, ID_SEARCH_NAME), WM_GETTEXT, MAX_PATH, (LPARAM)&search_string);
-            SendMessageW(GetDlgItem(hwndDlg, ID_SEARCH_TYPE), WM_GETTEXT, MAX_PATH, (LPARAM)&type_name);
+            SendMessage(GetDlgItem(hwndDlg, ID_SEARCH_NAME), WM_GETTEXT, MAX_PATH, (LPARAM)&search_string);
+            SendMessage(GetDlgItem(hwndDlg, ID_SEARCH_TYPE), WM_GETTEXT, MAX_PATH, (LPARAM)&type_name);
             flist = NULL;
 
             if (search_string[0] == 0)
@@ -346,14 +340,14 @@ INT_PTR CALLBACK FindDlgProc(
             while (flist != NULL) {
                 FindDlgAddListItem(FindDlgList, flist->ObjectName, flist->ObjectType);
                 plist = flist->Prev;
-                HeapFree(GetProcessHeap(), 0, flist);
+                supHeapFree(flist);
                 flist = plist;
                 cci++;
             }
 
             ultostr(cci, search_string);
-            _strcat(search_string, L" Object(s) found");
-            SendMessageW(GetDlgItem(hwndDlg, ID_SEARCH_GROUPBOX), WM_SETTEXT, 0, (LPARAM)search_string);
+            _strcat(search_string, TEXT(" Object(s) found"));
+            SendMessage(GetDlgItem(hwndDlg, ID_SEARCH_GROUPBOX), WM_SETTEXT, 0, (LPARAM)search_string);
 
             ListView_SortItemsEx(FindDlgList, &FindDlgCompareFunc, FindDlgSortColumn);
 
@@ -375,7 +369,7 @@ INT_PTR CALLBACK FindDlgProc(
 *
 */
 VOID FindDlgAddTypes(
-    HWND hwnd
+    _In_ HWND hwnd
 )
 {
     ULONG  i;
@@ -386,9 +380,8 @@ VOID FindDlgAddTypes(
     POBJECT_TYPE_INFORMATION  pObject;
 
     hComboBox = GetDlgItem(hwnd, ID_SEARCH_TYPE);
-    if (hComboBox == NULL) {
+    if (hComboBox == NULL)
         return;
-    }
 
     SendMessage(hComboBox, CB_RESETCONTENT, (WPARAM)0, (LPARAM)0);
 
@@ -398,23 +391,29 @@ VOID FindDlgAddTypes(
         return;
     }
 
-    //
-    // Warning: not all object types are listed.
-    //
     __try {
         //type collection available, list it
-        pObject = (POBJECT_TYPE_INFORMATION)&g_pObjectTypesInfo->TypeInformation;
+        if (g_kdctx.IsWine) {
+            pObject = OBJECT_TYPES_FIRST_ENTRY_WINE(g_pObjectTypesInfo);
+        }
+        else {
+            pObject = OBJECT_TYPES_FIRST_ENTRY(g_pObjectTypesInfo);
+        }
+
         for (i = 0; i < g_pObjectTypesInfo->NumberOfTypes; i++) {
             sz = pObject->TypeName.MaximumLength + sizeof(UNICODE_NULL);
-            lpType = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sz);
+            lpType = (LPWSTR)supHeapAlloc(sz);
             if (lpType) {
-                _strncpy(lpType, sz / sizeof(WCHAR),
-                    pObject->TypeName.Buffer, pObject->TypeName.Length / sizeof(WCHAR));
+
+                _strncpy(lpType,
+                    sz / sizeof(WCHAR),
+                    pObject->TypeName.Buffer,
+                    pObject->TypeName.Length / sizeof(WCHAR));
+
                 SendMessage(hComboBox, CB_ADDSTRING, (WPARAM)0, (LPARAM)lpType);
-                HeapFree(GetProcessHeap(), 0, lpType);
+                supHeapFree(lpType);
             }
-            pObject = (POBJECT_TYPE_INFORMATION)((PCHAR)(pObject + 1) +
-                ALIGN_UP(pObject->TypeName.MaximumLength, sizeof(ULONG_PTR)));
+            pObject = OBJECT_TYPES_NEXT_ENTRY(pObject);
         }
         SendMessage(hComboBox, CB_ADDSTRING, (WPARAM)0, (LPARAM)L"*");
         SendMessage(hComboBox, CB_SETCURSEL, (WPARAM)0, (LPARAM)0);
@@ -440,32 +439,37 @@ VOID FindDlgCreate(
     HICON    hIcon;
 
     //do not allow second copy
-    if (g_wobjDialogs[WOBJ_FINDDLG_IDX]) {
-        SetActiveWindow(g_wobjDialogs[WOBJ_FINDDLG_IDX]);
+    if (g_WinObj.AuxDialogs[wobjFindDlgId]) {
+        SetActiveWindow(g_WinObj.AuxDialogs[wobjFindDlgId]);
         return;
     }
 
-    FindDialog = CreateDialogParam(g_hInstance, MAKEINTRESOURCE(IDD_DIALOG_SEARCH), hwndParent, &FindDlgProc, 0);
+    FindDialog = CreateDialogParam(g_WinObj.hInstance, MAKEINTRESOURCE(IDD_DIALOG_SEARCH), hwndParent, &FindDlgProc, 0);
     if (FindDialog == NULL) {
         return;
     }
-    g_wobjDialogs[WOBJ_FINDDLG_IDX] = FindDialog;
+    g_WinObj.AuxDialogs[wobjFindDlgId] = FindDialog;
 
     FindDlgGrip = supCreateSzGripWindow(FindDialog);
 
     //set dialog icon, because we use shared dlg template this icon must be
     //removed after use, see aboutDlg/propDlg.
-    hIcon = LoadImage(g_hInstance, MAKEINTRESOURCE(IDI_ICON_MAIN), IMAGE_ICON, 0, 0, LR_SHARED);
+    hIcon = (HICON)LoadImage(g_WinObj.hInstance, MAKEINTRESOURCE(IDI_ICON_MAIN), IMAGE_ICON, 0, 0, LR_SHARED);
     if (hIcon) {
-        SetClassLongPtr(g_wobjDialogs[WOBJ_FINDDLG_IDX], GCLP_HICON, (LONG_PTR)hIcon);
+        SetClassLongPtr(g_WinObj.AuxDialogs[wobjFindDlgId], GCLP_HICON, (LONG_PTR)hIcon);
         DestroyIcon(hIcon);
     }
 
     FindDlgList = GetDlgItem(FindDialog, ID_SEARCH_LIST);
     if (FindDlgList) {
         bFindDlgSortInverse = FALSE;
-        ListView_SetImageList(FindDlgList, ListViewImages, LVSIL_SMALL);
-        ListView_SetExtendedListViewStyle(FindDlgList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+        ListView_SetImageList(FindDlgList, g_ListViewImages, LVSIL_SMALL);
+
+        ListView_SetExtendedListViewStyle(
+            FindDlgList,
+            LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+
+        SetWindowTheme(FindDlgList, TEXT("Explorer"), NULL);
 
         RtlSecureZeroMemory(&col, sizeof(col));
         col.mask = LVCF_TEXT | LVCF_SUBITEM | LVCF_FMT | LVCF_WIDTH | LVCF_ORDER | LVCF_IMAGE;
@@ -473,14 +477,15 @@ VOID FindDlgCreate(
         col.pszText = TEXT("Name");
         col.fmt = LVCFMT_LEFT | LVCFMT_BITMAP_ON_RIGHT;
         col.iOrder = 0;
-        col.iImage = ImageList_GetImageCount(ListViewImages) - 1;
+        col.iImage = ImageList_GetImageCount(g_ListViewImages) - 1;
         col.cx = 300;
         ListView_InsertColumn(FindDlgList, 1, &col);
+
+        col.iImage = I_IMAGENONE;
 
         col.iSubItem = 2;
         col.pszText = TEXT("Type");
         col.iOrder = 1;
-        col.iImage = -1;
         col.cx = 100;
         ListView_InsertColumn(FindDlgList, 2, &col);
     }

@@ -1,12 +1,12 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2015 - 2016
+*  (C) COPYRIGHT AUTHORS, 2015 - 2018
 *
 *  TITLE:       EXTRASUSD.H
 *
-*  VERSION:     1.45
+*  VERSION:     1.60
 *
-*  DATE:        06 Aug 2016
+*  DATE:        24 Oct 2018
 *
 *  Common header file for Extras User Shared Data dialog.
 *
@@ -55,7 +55,7 @@ static LPWSTR T_PROCESSOR_FEATURES[] = {
     L""
 };
 
-#define MAX_KNOWN_SHAREDDATAFLAGS 10
+#define MAX_KNOWN_SHAREDDATAFLAGS 11
 static LPCWSTR T_SharedDataFlags[MAX_KNOWN_SHAREDDATAFLAGS] = {
     L"DbgErrorPortPresent",
     L"DbgElevationEnabled",
@@ -66,10 +66,11 @@ static LPCWSTR T_SharedDataFlags[MAX_KNOWN_SHAREDDATAFLAGS] = {
     L"DbgConsoleBrokerEnabled",
     L"DbgSecureBootEnabled",
     L"DbgMultiSessionSku",
-    L"DbgMultiUsersInSessionSku"
+    L"DbgMultiUsersInSessionSku",
+    L"DbgStateSeparationEnabled"
 };
 
-#define MAX_KNOWN_SUITEMASKS 18
+#define MAX_KNOWN_SUITEMASKS 19
 static VALUE_DESC SuiteMasks[MAX_KNOWN_SUITEMASKS] = {
     { L"ServerNT", VER_SERVER_NT },
     { L"WorkstationNT", VER_WORKSTATION_NT },
@@ -88,9 +89,9 @@ static VALUE_DESC SuiteMasks[MAX_KNOWN_SUITEMASKS] = {
     { L"SecurityAppliance", VER_SUITE_SECURITY_APPLIANCE },
     { L"StorageServer", VER_SUITE_STORAGE_SERVER },
     { L"ComputeServer", VER_SUITE_COMPUTE_SERVER },
-    { L"HomeServer", VER_SUITE_WH_SERVER }
+    { L"HomeServer", VER_SUITE_WH_SERVER },
+    { L"MultiUserTS", 0x00020000 }
 };
 
 VOID extrasCreateUsdDialog(
-    _In_ HWND hwndParent
-);
+    _In_ HWND hwndParent);

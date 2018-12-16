@@ -1,12 +1,12 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2015 - 2017
+*  (C) COPYRIGHT AUTHORS, 2015 - 2018
 *
 *  TITLE:       GLOBAL.H
 *
-*  VERSION:     1.47
+*  VERSION:     1.70
 *
-*  DATE:        21 Mar 2017
+*  DATE:        30 Nov 2018
 *
 *  Common header file for the Windows Object Explorer.
 *
@@ -30,7 +30,10 @@
 //
 #pragma warning(disable: 4005) // macro redefinition
 #pragma warning(disable: 4201) // nonstandard extension used : nameless struct/union
+#pragma warning(disable: 4302) // 'type cast': truncation from '%s' to '%s'
 #pragma warning(disable: 6102) // Using %s from failed function call at line %u
+#pragma warning(disable: 6255 6263) // alloca
+#pragma warning(disable: 6320) // Exception-filter expression is the constant EXCEPTION_EXECUTE_HANDLER. This might mask exceptions that were not intended to be handled.
 #if (_MSC_VER >= 1900)
 #pragma warning(disable: 4091) // 'typedef ': ignored on left of '' when no variable is declared
 #pragma warning(disable: 4311) // 'type cast': pointer truncation from %s to %s
@@ -46,25 +49,36 @@
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "Setupapi.lib")
 #pragma comment(lib, "Version.lib")
-#if (_MSC_VER >= 1900)
+
+#if defined (_MSC_VER)
+#if (_MSC_VER >= 1910)
 #ifdef _DEBUG
 #pragma comment(lib, "vcruntimed.lib")
 #pragma comment(lib, "ucrtd.lib")
 #else
+#pragma comment(lib, "libucrt.lib")
 #pragma comment(lib, "libvcruntime.lib")
+#endif
 #endif
 #endif
 
 #include <Windows.h>
 #include <commctrl.h>
+#include <Uxtheme.h>
 #include <ntstatus.h>
+#include "wine.h"
 #include <sddl.h>
 #include "minirtl\minirtl.h"
+#include "minirtl\rtltypes.h"
 #include "ntos\ntos.h"
 #include "ntos\ntalpc.h"
+
+#define _NTDEF_
+#include <ntsecapi.h>
+#undef _NTDEF_
+
 #include "objects.h"
 #include "kldbg.h"
-#include "ldr\ldr.h"
 #include "ui.h"
 #include "sup.h"
 #include "supConsts.h"
@@ -75,5 +89,22 @@
 #include "tests\testunit.h"
 #include "resource.h"
 
-//project global variable
-HINSTANCE g_hInstance;
+#if defined(__cplusplus)
+#include <malloc.h>
+#endif
+
+typedef struct _WINOBJ_GLOBALS {
+    BOOL EnableExperimentalFeatures;
+    HINSTANCE hInstance;
+    HANDLE Heap;
+    LPWSTR CurrentObjectPath;
+    pfnHtmlHelpW HtmlHelpW;
+    HWND AuxDialogs[wobjMaxDlgId];
+    CRITICAL_SECTION Lock;
+    RTL_OSVERSIONINFOW osver;
+    WCHAR szTempDirectory[MAX_PATH + 1]; //not including backslash
+    WCHAR szWindowsDirectory[MAX_PATH + 1]; //not including backslash
+    WCHAR szSystemDirectory[MAX_PATH + 1]; //not including backslash
+} WINOBJ_GLOBALS, *PWINOBJ_GLOBALS;
+
+extern WINOBJ_GLOBALS g_WinObj;

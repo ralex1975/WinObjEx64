@@ -1,12 +1,12 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2015 - 2016
+*  (C) COPYRIGHT AUTHORS, 2015 - 2018
 *
 *  TITLE:       LIST.H
 *
-*  VERSION:     1.44
+*  VERSION:     1.60
 *
-*  DATE:        17 July 2016
+*  DATE:        24 Oct 2018
 *
 *  Common header file main program logic.
 *
@@ -25,31 +25,35 @@ typedef	struct _FO_LIST_ITEM {
     WCHAR	NameBuffer[2];
 } FO_LIST_ITEM, *PFO_LIST_ITEM;
 
+HTREEITEM TreeListAddItem(
+    _In_ HWND TreeList,
+    _In_opt_ HTREEITEM hParent,
+    _In_ UINT mask,
+    _In_ UINT state,
+    _In_ UINT stateMask,
+    _In_opt_ LPWSTR pszText,
+    _In_opt_ PVOID subitems);
+
 VOID ListToObject(
-    _In_ LPWSTR ObjectName
-);
+    _In_ LPWSTR ObjectName);
 
 VOID ListObjectDirectoryTree(
     _In_ LPWSTR SubDirName,
     _In_opt_ HANDLE RootHandle,
-    _In_opt_ HTREEITEM ViewRootHandle
-);
+    _In_opt_ HTREEITEM ViewRootHandle);
 
 VOID AddListViewItem(
     _In_ HANDLE hObjectRootDirectory,
-    _In_ POBJECT_DIRECTORY_INFORMATION objinf,
-    _In_ PENUM_PARAMS lpEnumParams
-);
+    _In_ POBJECT_DIRECTORY_INFORMATION objinf);
 
 VOID FindObject(
     _In_ LPWSTR DirName,
     _In_opt_ LPWSTR NameSubstring,
     _In_opt_ LPWSTR TypeName,
-    _In_ PFO_LIST_ITEM *List
-);
+    _In_ PFO_LIST_ITEM *List);
 
 VOID ListObjectsInDirectory(
-    _In_ PENUM_PARAMS lpEnumParams
+    _In_ LPWSTR lpObjectDirectory
 );
 
 VOID FORCEINLINE InitializeListHead(
@@ -77,7 +81,7 @@ BOOLEAN FORCEINLINE RemoveEntryList(
 }
 
 PLIST_ENTRY FORCEINLINE RemoveHeadList(
-    _In_ PLIST_ENTRY ListHead
+    _Inout_ PLIST_ENTRY ListHead
 )
 {
     PLIST_ENTRY Flink;
@@ -91,8 +95,8 @@ PLIST_ENTRY FORCEINLINE RemoveHeadList(
 }
 
 VOID FORCEINLINE InsertHeadList(
-    _In_ PLIST_ENTRY ListHead,
-    _In_ PLIST_ENTRY Entry
+    _Inout_ PLIST_ENTRY ListHead,
+    _Inout_ PLIST_ENTRY Entry
 )
 {
     PLIST_ENTRY Flink;

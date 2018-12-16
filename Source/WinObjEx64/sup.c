@@ -1,12 +1,12 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2015 - 2017
+*  (C) COPYRIGHT AUTHORS, 2015 - 2018
 *
 *  TITLE:       SUP.C
 *
-*  VERSION:     1.47
+*  VERSION:     1.70
 *
-*  DATE:        21 Mar 2017
+*  DATE:        03 Dec 2018
 *
 * THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
 * ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED
@@ -15,20 +15,196 @@
 *
 *******************************************************************************/
 #include "global.h"
-#include "treelist.h"
+#include "treelist\treelist.h"
 #include "extras\extrasSSDT.h"
 #include <cfgmgr32.h>
 #include <setupapi.h>
 
-//used while objects enumeration in listview
-ENUM_PARAMS	g_enumParams;
+//
+// Setup info database.
+//
+SAPIDB g_sapiDB;
 
-//types collection
+//
+// SCM info database.
+//
+SCMDB g_scmDB;
+
+//
+// Types collection.
+//
 POBJECT_TYPES_INFORMATION g_pObjectTypesInfo = NULL;
 
-//Dll path for known dlls
+//
+// Dll path for known dlls.
+//
 LPWSTR	g_lpKnownDlls32;
 LPWSTR	g_lpKnownDlls64;
+
+#ifdef _DEBUG
+ULONG g_cHeapAlloc = 0;
+#endif
+
+/*
+* supHeapAlloc
+*
+* Purpose:
+*
+* Wrapper for RtlAllocateHeap with WinObjEx heap.
+*
+*/
+#ifndef _PROFILE_MEMORY_USAGE_
+FORCEINLINE PVOID supHeapAlloc(
+    _In_ SIZE_T Size)
+{
+    return RtlAllocateHeap(g_WinObj.Heap, HEAP_ZERO_MEMORY, Size);
+}
+#else
+PVOID supHeapAlloc(
+    _In_ SIZE_T Size)
+{
+    LONG x;
+    DWORD LastError;
+    PVOID Buffer = NULL;
+    WCHAR szBuffer[100];
+
+    Buffer = RtlAllocateHeap(g_WinObj.Heap, HEAP_ZERO_MEMORY, Size);
+    LastError = GetLastError();
+
+    if (Buffer) {
+        x = InterlockedIncrement((PLONG)&g_cHeapAlloc);
+
+        _strcpy(szBuffer, L"Allocate buffer with size=");
+        u64tostr((ULONG_PTR)Size, _strend(szBuffer));
+        _strcat(szBuffer, L"\r\n");
+        OutputDebugString(szBuffer);
+
+        _strcpy(szBuffer, L"g_cHeapAlloc=");
+        ultostr(x, _strend(szBuffer));
+        _strcat(szBuffer, L"\r\n");
+        OutputDebugString(szBuffer);
+    }
+    else {
+        _strcpy(szBuffer, L"Allocate buffer with size=");
+        u64tostr((ULONG_PTR)Size, _strend(szBuffer));
+        _strcat(szBuffer, L"FAILED \r\n");
+        OutputDebugString(szBuffer);
+    }
+
+    SetLastError(LastError);
+    return Buffer;
+}
+#endif
+
+/*
+* supHeapFree
+*
+* Purpose:
+*
+* Wrapper for RtlFreeHeap with WinObjEx heap.
+*
+*/
+#ifndef _PROFILE_MEMORY_USAGE_
+FORCEINLINE BOOL supHeapFree(
+    _In_ PVOID Memory)
+{
+    return RtlFreeHeap(g_WinObj.Heap, 0, Memory);
+}
+#else
+BOOL supHeapFree(
+    _In_ PVOID Memory)
+{
+    LONG x;
+    BOOL bSuccess;
+    DWORD LastError;
+    WCHAR szBuffer[100];
+
+    bSuccess = RtlFreeHeap(g_WinObj.Heap, 0, Memory);
+    LastError = GetLastError();
+
+    if (bSuccess) {
+        x = InterlockedDecrement((PLONG)&g_cHeapAlloc);
+        _strcpy(szBuffer, L"Free buffer=0x");
+        u64tohex((ULONG_PTR)Memory, _strend(szBuffer));
+        _strcat(szBuffer, L"\r\n");
+        OutputDebugString(szBuffer);
+
+        _strcpy(szBuffer, L"g_cHeapAlloc=");
+        ultostr(x, _strend(szBuffer));
+        _strcat(szBuffer, L"\r\n");
+        OutputDebugString(szBuffer);
+    }
+    else {
+        _strcpy(szBuffer, L"Free buffer=0x");
+        u64tohex((ULONG_PTR)Memory, _strend(szBuffer));
+        _strcat(szBuffer, L" FAILED \r\n");
+        OutputDebugString(szBuffer);
+    }
+
+    SetLastError(LastError);
+    return bSuccess;
+}
+#endif
+
+/*
+* supVirtualAlloc
+*
+* Purpose:
+*
+* Wrapper for NtAllocateVirtualMemory.
+*
+*/
+PVOID supVirtualAlloc(
+    _In_ SIZE_T Size)
+{
+    NTSTATUS Status;
+    PVOID Buffer = NULL;
+    SIZE_T size;
+
+    size = Size;
+    Status = NtAllocateVirtualMemory(
+        NtCurrentProcess(),
+        &Buffer,
+        0,
+        &size,
+        MEM_COMMIT | MEM_RESERVE,
+        PAGE_READWRITE);
+
+    if (NT_SUCCESS(Status)) {
+        RtlSecureZeroMemory(Buffer, size);
+        return Buffer;
+    }
+
+    SetLastError(RtlNtStatusToDosError(Status));
+    return NULL;
+}
+
+/*
+* supVirtualFree
+*
+* Purpose:
+*
+* Wrapper for NtFreeVirtualMemory.
+*
+*/
+BOOL supVirtualFree(
+    _In_ PVOID Memory)
+{
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    SIZE_T size = 0;
+
+    if (Memory) {
+        Status = NtFreeVirtualMemory(
+            NtCurrentProcess(),
+            &Memory,
+            &size,
+            MEM_RELEASE);
+    }
+
+    SetLastError(RtlNtStatusToDosError(Status));
+    return NT_SUCCESS(Status);
+}
+
 /*
 * supInitTreeListForDump
 *
@@ -38,9 +214,9 @@ LPWSTR	g_lpKnownDlls64;
 *
 */
 BOOL supInitTreeListForDump(
-    _In_  HWND  hwndParent,
-    _Inout_ ATOM *pTreeListAtom,
-    _Inout_ HWND *pTreeListHwnd
+    _In_ HWND hwndParent,
+    _Out_ ATOM *pTreeListAtom,
+    _Out_ HWND *pTreeListHwnd
 )
 {
     ATOM     TreeListAtom;
@@ -59,7 +235,7 @@ BOOL supInitTreeListForDump(
         rc.right - 24, rc.bottom - 30, hwndParent, NULL, NULL, NULL);
 
     if (TreeList == NULL) {
-        UnregisterClass(MAKEINTATOM(TreeListAtom), g_hInstance);
+        UnregisterClass(MAKEINTATOM(TreeListAtom), g_WinObj.hInstance);
         *pTreeListHwnd = NULL;
         *pTreeListAtom = 0;
         return FALSE;
@@ -72,13 +248,13 @@ BOOL supInitTreeListForDump(
     hdritem.mask = HDI_FORMAT | HDI_TEXT | HDI_WIDTH;
     hdritem.fmt = HDF_LEFT | HDF_BITMAP_ON_RIGHT | HDF_STRING;
     hdritem.cxy = 220;
-    hdritem.pszText = L"Field";
+    hdritem.pszText = TEXT("Field");
     TreeList_InsertHeaderItem(TreeList, 0, &hdritem);
     hdritem.cxy = 130;
-    hdritem.pszText = L"Value";
+    hdritem.pszText = TEXT("Value");
     TreeList_InsertHeaderItem(TreeList, 1, &hdritem);
     hdritem.cxy = 200;
-    hdritem.pszText = L"Additional Information";
+    hdritem.pszText = TEXT("Additional Information");
     TreeList_InsertHeaderItem(TreeList, 2, &hdritem);
 
     return TRUE;
@@ -106,17 +282,17 @@ VOID supClipboardCopy(
         dwSize = cbText + sizeof(UNICODE_NULL);
         hglbCopy = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, dwSize);
         if (hglbCopy != NULL) {
-            lptstrCopy = GlobalLock(hglbCopy);
+            lptstrCopy = (LPWSTR)GlobalLock(hglbCopy);
             if (lptstrCopy) {
                 supCopyMemory(lptstrCopy, dwSize, lpText, cbText);
             }
             GlobalUnlock(hglbCopy);
-            SetClipboardData(CF_UNICODETEXT, hglbCopy);
+            if (!SetClipboardData(CF_UNICODETEXT, hglbCopy))
+                GlobalFree(hglbCopy);
         }
         CloseClipboard();
     }
 }
-
 
 /*
 * supQueryObjectFromHandle
@@ -126,66 +302,40 @@ VOID supClipboardCopy(
 * Return object kernel address from handle in current process handle table.
 *
 */
+_Success_(return != FALSE)
 BOOL supQueryObjectFromHandle(
     _In_ HANDLE hOject,
-    _Inout_ ULONG_PTR *Address,
-    _Inout_opt_ UCHAR *TypeIndex
+    _Out_ ULONG_PTR *Address,
+    _Out_opt_ USHORT *TypeIndex
 )
 {
     BOOL   bFound = FALSE;
-    ULONG  i;
+    ULONG_PTR i;
     DWORD  CurrentProcessId = GetCurrentProcessId();
 
-    PSYSTEM_HANDLE_INFORMATION pHandles;
+    PSYSTEM_HANDLE_INFORMATION_EX pHandles;
 
     if (Address == NULL) {
         return bFound;
     }
-    pHandles = (PSYSTEM_HANDLE_INFORMATION)supGetSystemInfo(SystemHandleInformation);
+
+    pHandles = (PSYSTEM_HANDLE_INFORMATION_EX)supGetSystemInfo(SystemExtendedHandleInformation);
     if (pHandles) {
         for (i = 0; i < pHandles->NumberOfHandles; i++) {
-            if (pHandles->Handles[i].UniqueProcessId == CurrentProcessId) {
-                if (pHandles->Handles[i].HandleValue == (USHORT)(ULONG_PTR)hOject) {
-                    if ((ULONG_PTR)pHandles->Handles[i].Object < g_kdctx.SystemRangeStart) {
-                        *Address = 0;
-                        if (TypeIndex) {
-                            *TypeIndex = 0;
-                        }
+            if (pHandles->Handles[i].UniqueProcessId == (ULONG_PTR)CurrentProcessId) {
+                if (pHandles->Handles[i].HandleValue == (ULONG_PTR)hOject) {
+                    *Address = (ULONG_PTR)pHandles->Handles[i].Object;
+                    if (TypeIndex) {
+                        *TypeIndex = pHandles->Handles[i].ObjectTypeIndex;
                     }
-                    else {
-                        *Address = (ULONG_PTR)pHandles->Handles[i].Object;
-                        if (TypeIndex) {
-                            *TypeIndex = pHandles->Handles[i].ObjectTypeIndex;
-                        }
-                        bFound = TRUE;
-                    }
+                    bFound = TRUE;
                     break;
                 }
             }
         }
-        HeapFree(GetProcessHeap(), 0, pHandles);
+        supHeapFree(pHandles);
     }
     return bFound;
-}
-
-/*
-* supSyscallTableEntryToAddress
-*
-* Purpose:
-*
-* Translate KiServiceTable entry to the real function address.
-*
-*/
-ULONG_PTR supSyscallTableEntryToAddress(
-    PULONG KiServiceTable,
-    ULONG ServiceId,
-    ULONG_PTR KiServiceTablePtr
-)
-{
-    LONG32 Offset;
-
-    Offset = ((LONG32)KiServiceTable[ServiceId] >> 4);
-    return KiServiceTablePtr + Offset;
 }
 
 /*
@@ -193,51 +343,48 @@ ULONG_PTR supSyscallTableEntryToAddress(
 *
 * Purpose:
 *
-* Read KiServiceTable and convert it.
+* Read service table and convert it.
 *
 */
 BOOL supDumpSyscallTableConverted(
-    _In_ PKLDBGCONTEXT Context,
-    _Inout_ PUTable *Table
+    _In_ ULONG_PTR ServiceTableAddress,
+    _In_ ULONG ServiceLimit,
+    _Out_ PUTable *Table
 )
 {
     ULONG   ServiceId, memIO, bytesRead;
     BOOL    bResult = FALSE;
-    PULONG  KiServiceTableDumped = NULL;
+    PULONG  ServiceTableDumped = NULL;
     PUTable ConvertedTable;
 
-    if ((Context == NULL) || (Table == NULL))
-        return bResult;
+    LONG32 Offset;
 
-    __try {
-        if ((Context->KiServiceTableAddress == 0) || (Context->KiServiceLimit == 0))
-            __leave;
+    *Table = NULL;
 
-        memIO = (ULONG)(Context->KiServiceLimit * sizeof(ULONG_PTR));
-        KiServiceTableDumped = (PULONG)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, memIO);
-        if (KiServiceTableDumped == NULL)
-            __leave;
+    memIO = ServiceLimit * sizeof(ULONG);
 
+    ServiceTableDumped = (PULONG)supHeapAlloc(memIO);
+    if (ServiceTableDumped) {
         bytesRead = 0;
-        if (!kdReadSystemMemoryEx(Context->KiServiceTableAddress, (PVOID)KiServiceTableDumped, memIO, &bytesRead))
-            __leave;
+        if (kdReadSystemMemoryEx(
+            ServiceTableAddress,
+            (PVOID)ServiceTableDumped,
+            memIO,
+            &bytesRead))
+        {
+            ConvertedTable = (PULONG_PTR)supHeapAlloc(ServiceLimit * sizeof(ULONG_PTR));
 
-        if (bytesRead > 16) {
-            ConvertedTable = (PULONG_PTR)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bytesRead);
             if (ConvertedTable) {
+
                 *Table = ConvertedTable;
-                for (ServiceId = 0; ServiceId < Context->KiServiceLimit; ServiceId++) {
-                    ConvertedTable[ServiceId] = supSyscallTableEntryToAddress(KiServiceTableDumped, ServiceId,
-                        Context->KiServiceTableAddress);
+                for (ServiceId = 0; ServiceId < ServiceLimit; ServiceId++) {
+                    Offset = ((LONG32)ServiceTableDumped[ServiceId] >> 4);
+                    ConvertedTable[ServiceId] = ServiceTableAddress + Offset;
                 }
                 bResult = TRUE;
             }
         }
-    }
-    __finally {
-        if (KiServiceTableDumped != NULL) {
-            HeapFree(GetProcessHeap(), 0, KiServiceTableDumped);
-        }
+        supHeapFree(ServiceTableDumped);
     }
     return bResult;
 }
@@ -251,27 +398,56 @@ BOOL supDumpSyscallTableConverted(
 *
 */
 VOID supShowHelp(
-    VOID
+    _In_ HWND ParentWindow
 )
 {
-    DWORD   dwSize;
+    DWORD   dwSize, dwType = 0;
     HKEY    hKey;
     LRESULT lRet;
-    HANDLE  hHtmlOcx;
+    HMODULE hHtmlOcx;
+    LPWSTR  s;
     WCHAR   szOcxPath[MAX_PATH + 1];
+    WCHAR   szBuffer[MAX_PATH * 2];
     WCHAR   szHelpFile[MAX_PATH * 2];
 
-    RtlSecureZeroMemory(&szOcxPath, sizeof(szOcxPath));
+    //
+    //  Check if CHM file exist and remember filename.
+    //
     RtlSecureZeroMemory(szHelpFile, sizeof(szHelpFile));
+    if (!GetCurrentDirectory(MAX_PATH, szHelpFile)) {
+        return;
+    }
+    _strcat(szHelpFile, L"\\winobjex64.chm");
+
+    if (!PathFileExists(szHelpFile)) {
+        s = (LPWSTR)supHeapAlloc((MAX_PATH * 2) + (_strlen(szHelpFile) * sizeof(WCHAR)));
+        if (s) {
+            _strcpy(s, TEXT("Help file could not be found - "));
+            _strcat(s, szHelpFile);
+            MessageBox(ParentWindow, s, NULL, MB_ICONINFORMATION);
+            supHeapFree(s);
+        }
+        return;
+    }
+
+    //
+    // Query OCX path from registry.
+    //
+    RtlSecureZeroMemory(szOcxPath, sizeof(szOcxPath));
+    RtlSecureZeroMemory(szBuffer, sizeof(szBuffer));
     lRet = RegOpenKeyEx(HKEY_CLASSES_ROOT, HHCTRLOCXKEY, 0, KEY_QUERY_VALUE, &hKey);
     if (lRet == ERROR_SUCCESS) {
         dwSize = MAX_PATH * sizeof(WCHAR);
-        lRet = RegQueryValueEx(hKey, L"", NULL, NULL, (LPBYTE)szHelpFile, &dwSize);
+        lRet = RegQueryValueEx(hKey, L"", NULL, &dwType, (LPBYTE)szBuffer, &dwSize);
         RegCloseKey(hKey);
 
         if (lRet == ERROR_SUCCESS) {
-            if (ExpandEnvironmentStrings(szHelpFile, szOcxPath, MAX_PATH) == 0) {
-                lRet = ERROR_SECRET_TOO_LONG;
+            if (dwType == REG_EXPAND_SZ) {
+                if (ExpandEnvironmentStrings(szBuffer, szOcxPath, MAX_PATH) == 0)
+                    lRet = ERROR_SECRET_TOO_LONG;
+            }
+            else {
+                _strncpy(szOcxPath, MAX_PATH, szBuffer, MAX_PATH);
             }
         }
     }
@@ -279,12 +455,9 @@ VOID supShowHelp(
         _strcpy(szOcxPath, HHCTRLOCX);
     }
 
-    RtlSecureZeroMemory(szHelpFile, sizeof(szHelpFile));
-    if (!GetCurrentDirectory(MAX_PATH, szHelpFile)) {
-        return;
-    }
-    _strcat(szHelpFile, L"\\winobjex64.chm");
-
+    //
+    // Load OCX and call help.
+    //
     hHtmlOcx = GetModuleHandle(HHCTRLOCX);
     if (hHtmlOcx == NULL) {
         hHtmlOcx = LoadLibrary(szOcxPath);
@@ -292,13 +465,13 @@ VOID supShowHelp(
             return;
         }
     }
-    if (pHtmlHelpW == NULL) {
-        pHtmlHelpW = (pfnHtmlHelpW)GetProcAddress(hHtmlOcx, MAKEINTRESOURCEA(0xF));
-        if (pHtmlHelpW == NULL) {
+    if (g_WinObj.HtmlHelpW == NULL) {
+        g_WinObj.HtmlHelpW = (pfnHtmlHelpW)GetProcAddress(hHtmlOcx, MAKEINTRESOURCEA(0xF));
+        if (g_WinObj.HtmlHelpW == NULL) {
             return;
         }
     }
-    pHtmlHelpW(GetDesktopWindow(), szHelpFile, 0, 0);
+    g_WinObj.HtmlHelpW(GetDesktopWindow(), szHelpFile, 0, 0);
 }
 
 /*
@@ -402,11 +575,69 @@ void supCopyMemory(
 *
 */
 VOID supSetWaitCursor(
-    BOOL fSet
+    _In_ BOOL fSet
 )
 {
     ShowCursor(fSet);
     SetCursor(LoadCursor(NULL, fSet ? IDC_WAIT : IDC_ARROW));
+}
+
+/*
+* supxLoadBannerDialog
+*
+* Purpose:
+*
+* Wait window banner dialog procedure.
+*
+*/
+INT_PTR CALLBACK supxLoadBannerDialog(
+    _In_ HWND   hwndDlg,
+    _In_ UINT   uMsg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam
+)
+{
+    UNREFERENCED_PARAMETER(wParam);
+
+    switch (uMsg) {
+
+    case WM_INITDIALOG:
+        supCenterWindow(hwndDlg);
+
+        if (lParam) {
+            SetDlgItemText(hwndDlg, IDC_LOADING_MSG, (LPWSTR)lParam);
+        }
+        break;
+
+    case WM_CLOSE:
+        DestroyWindow(hwndDlg);
+        break;
+
+    default:
+        break;
+    }
+    return 0;
+}
+
+/*
+* supDisplayLoadBanner
+*
+* Purpose:
+*
+* Display borderless banner window to inform user about operation that need some wait.
+*
+*/
+HWND supDisplayLoadBanner(
+    _In_ HWND hwndParent,
+    _In_ LPWSTR lpMessage
+)
+{
+    return CreateDialogParam(
+        g_WinObj.hInstance,
+        MAKEINTRESOURCE(IDD_DIALOG_LOAD),
+        hwndParent,
+        supxLoadBannerDialog,
+        (LPARAM)lpMessage);
 }
 
 /*
@@ -418,7 +649,7 @@ VOID supSetWaitCursor(
 *
 */
 VOID supCenterWindow(
-    HWND hwnd
+    _In_ HWND hwnd
 )
 {
     RECT rc, rcDlg, rcOwner;
@@ -448,8 +679,8 @@ VOID supCenterWindow(
 *
 * Returns buffer with system information by given InfoClass.
 *
-* Returned buffer must be freed with HeapFree after usage.
-* Function will return error after 100 attempts.
+* Returned buffer must be freed with supHeapFree after usage.
+* Function will return error after 20 attempts.
 *
 */
 PVOID supGetSystemInfo(
@@ -463,7 +694,7 @@ PVOID supGetSystemInfo(
     ULONG       memIO;
 
     do {
-        Buffer = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)Size);
+        Buffer = supHeapAlloc((SIZE_T)Size);
         if (Buffer != NULL) {
             status = NtQuerySystemInformation(InfoClass, Buffer, Size, &memIO);
         }
@@ -471,10 +702,11 @@ PVOID supGetSystemInfo(
             return NULL;
         }
         if (status == STATUS_INFO_LENGTH_MISMATCH) {
-            HeapFree(GetProcessHeap(), 0, Buffer);
+            supHeapFree(Buffer);
+            Buffer = NULL;
             Size *= 2;
             c++;
-            if (c > 100) {
+            if (c > 20) {
                 status = STATUS_SECRET_TOO_LONG;
                 break;
             }
@@ -486,7 +718,7 @@ PVOID supGetSystemInfo(
     }
 
     if (Buffer) {
-        HeapFree(GetProcessHeap(), 0, Buffer);
+        supHeapFree(Buffer);
     }
     return NULL;
 }
@@ -498,8 +730,8 @@ PVOID supGetSystemInfo(
 *
 * Returns buffer with system types information.
 *
-* Returned buffer must be freed with HeapFree after usage.
-* Function will return error after 100 attempts.
+* Returned buffer must be freed with supHeapFree after usage.
+* Function will return error after 5 attempts.
 *
 */
 PVOID supGetObjectTypesInfo(
@@ -508,39 +740,36 @@ PVOID supGetObjectTypesInfo(
 {
     INT         c = 0;
     PVOID       Buffer = NULL;
-    ULONG       Size = 0x1000;
+    ULONG       Size = 0x2000;
     NTSTATUS    status;
     ULONG       memIO;
 
     do {
-        Buffer = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)Size);
+        Buffer = supHeapAlloc((SIZE_T)Size);
         if (Buffer != NULL) {
             status = NtQueryObject(NULL, ObjectTypesInformation, Buffer, Size, &memIO);
         }
         else {
             return NULL;
         }
-        if (NT_SUCCESS(status)) {
-            break;
-        }
-        else {
-            Size = memIO;
-            HeapFree(GetProcessHeap(), 0, Buffer);
+        if (status == STATUS_INFO_LENGTH_MISMATCH) {
+            supHeapFree(Buffer);
             Buffer = NULL;
+            Size = memIO;
+            c++;
+            if (c > 5) {
+                status = STATUS_SECRET_TOO_LONG;
+                break;
+            }
         }
-        c++;
-        if (c > 100) {
-            status = STATUS_SECRET_TOO_LONG;
-            break;
-        }
-    } while (status != STATUS_SUCCESS);
+    } while (status == STATUS_INFO_LENGTH_MISMATCH);
 
     if (NT_SUCCESS(status)) {
         return Buffer;
     }
 
     if (Buffer) {
-        HeapFree(GetProcessHeap(), 0, Buffer);
+        supHeapFree(Buffer);
     }
     return NULL;
 }
@@ -552,14 +781,14 @@ PVOID supGetObjectTypesInfo(
 *
 * Returns buffer with text from the given listview item.
 *
-* Returned buffer must be freed with HeapFree after usage.
+* Returned buffer must be freed with supHeapFree after usage.
 *
 */
 LPWSTR supGetItemText(
     _In_ HWND ListView,
     _In_ INT nItem,
     _In_ INT nSubItem,
-    _Inout_opt_ PSIZE_T lpSize
+    _Out_opt_ PSIZE_T lpSize
 )
 {
     INT     len;
@@ -575,17 +804,17 @@ LPWSTR supGetItemText(
         len *= 2;
         item.cchTextMax = len;
         if (item.pszText) {
-            HeapFree(GetProcessHeap(), 0, item.pszText);
+            supHeapFree(item.pszText);
             item.pszText = NULL;
         }
-        item.pszText = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, len * sizeof(WCHAR));
+        item.pszText = (LPWSTR)supHeapAlloc(len * sizeof(WCHAR));
         sz = SendMessage(ListView, LVM_GETITEMTEXT, (WPARAM)item.iItem, (LPARAM)&item);
-    } while (sz == len - 1);
+    } while (sz == (LPARAM)len - 1);
 
     //empty string
     if (sz == 0) {
         if (item.pszText) {
-            HeapFree(GetProcessHeap(), 0, item.pszText);
+            supHeapFree(item.pszText);
             item.pszText = NULL;
         }
     }
@@ -593,6 +822,35 @@ LPWSTR supGetItemText(
     if (lpSize) {
         *lpSize = sz * sizeof(WCHAR);
     }
+    return item.pszText;
+}
+
+/*
+* supGetItemText2
+*
+* Purpose:
+*
+* Returns text from the given listview item.
+*
+*/
+LPWSTR supGetItemText2(
+    _In_ HWND ListView,
+    _In_ INT nItem,
+    _In_ INT nSubItem,
+    _In_ LPWSTR pszText,
+    _In_ UINT cbText
+)
+{
+    LV_ITEM item;
+
+    RtlSecureZeroMemory(&item, sizeof(item));
+
+    item.iItem = nItem;
+    item.iSubItem = nSubItem;
+    item.pszText = pszText;
+    item.cchTextMax = (SIZE_T)cbText;
+    SendMessage(ListView, LVM_GETITEMTEXT, (WPARAM)item.iItem, (LPARAM)&item);
+
     return item.pszText;
 }
 
@@ -605,19 +863,19 @@ LPWSTR supGetItemText(
 *
 */
 HIMAGELIST supLoadImageList(
-    HINSTANCE hInst,
-    UINT FirstId,
-    UINT LastId
+    _In_ HINSTANCE hInst,
+    _In_ UINT FirstId,
+    _In_ UINT LastId
 )
 {
     UINT       i;
     HIMAGELIST list;
     HICON      hIcon;
 
-    list = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, TYPE_UNKNOWN, 8);
+    list = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, TYPE_LAST, 8);
     if (list) {
         for (i = FirstId; i <= LastId; i++) {
-            hIcon = LoadImage(hInst, MAKEINTRESOURCE(i), IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR);
+            hIcon = (HICON)LoadImage(hInst, MAKEINTRESOURCE(i), IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR);
             if (hIcon) {
                 ImageList_ReplaceIcon(list, -1, hIcon);
                 DestroyIcon(hIcon);
@@ -644,94 +902,57 @@ UINT supGetObjectNameIndexByTypeIndex(
 {
     UINT   Index;
     ULONG  i;
-    BOOL   bFound = FALSE;
 
-    POBJECT_TYPE_INFORMATION   pObject;
-    POBJECT_TYPE_INFORMATION_8 pObject8;
+    POBJECT_TYPE_INFORMATION pObject;
+
+    union {
+        union {
+            POBJECT_TYPE_INFORMATION Object;
+            POBJECT_TYPE_INFORMATION_V2 ObjectV2;
+        } u1;
+        PBYTE Ref;
+    } ObjectTypeEntry;
+
+    if (Object == NULL) {
+        return ObjectTypeUnknown;
+    }
 
     __try {
 
-        if (Object == NULL) {
-            return TYPE_UNKNOWN;
-        }
-
         Index = ObDecodeTypeIndex(Object, TypeIndex);
 
-        pObject = (POBJECT_TYPE_INFORMATION)&g_pObjectTypesInfo->TypeInformation;
-        for (i = 0; i < g_pObjectTypesInfo->NumberOfTypes; i++) {
+        if (g_kdctx.IsWine) {
+            pObject = OBJECT_TYPES_FIRST_ENTRY_WINE(g_pObjectTypesInfo);
+        }
+        else {
+            pObject = OBJECT_TYPES_FIRST_ENTRY(g_pObjectTypesInfo);
+        }
 
-            if (g_kdctx.osver.dwBuildNumber >= 9200) {
-                pObject8 = (POBJECT_TYPE_INFORMATION_8)pObject;
-                if (pObject8->TypeIndex == Index) {
-                    bFound = TRUE;
+        for (i = 0; i < g_pObjectTypesInfo->NumberOfTypes; i++) {
+            if (g_NtBuildNumber >= 9200) {
+                ObjectTypeEntry.Ref = (PBYTE)pObject;
+                if (ObjectTypeEntry.u1.ObjectV2->TypeIndex == Index) {
+
+                    return ObManagerGetIndexByTypeName(
+                        pObject->TypeName.Buffer);
+
                 }
             }
             else {
                 if (i + 2 == Index) {
-                    bFound = TRUE;
+
+                    return ObManagerGetIndexByTypeName(
+                        pObject->TypeName.Buffer);
+
                 }
             }
-
-            if (bFound) {
-                return supGetObjectIndexByTypeName(pObject->TypeName.Buffer);
-            }
-
-            pObject = (POBJECT_TYPE_INFORMATION)((PCHAR)(pObject + 1) +
-                ALIGN_UP(pObject->TypeName.MaximumLength, sizeof(ULONG_PTR)));
+            pObject = OBJECT_TYPES_NEXT_ENTRY(pObject);
         }
-
     }
-    __except(exceptFilter(GetExceptionCode(), GetExceptionInformation())) {
-        return TYPE_UNKNOWN;
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return ObjectTypeUnknown;
     }
-    return TYPE_UNKNOWN;
-}
-
-
-/*
-* supGetObjectIndexByTypeName
-*
-* Purpose:
-*
-* Returns object index of known type.
-*
-* Known type names listed in objects.c, objects.h
-*
-*/
-UINT supGetObjectIndexByTypeName(
-    _In_ LPCWSTR lpTypeName
-)
-{
-    UINT nIndex;
-
-    if (lpTypeName == NULL) {
-        return TYPE_UNKNOWN;
-    }
-
-    for (nIndex = TYPE_DEVICE; nIndex < TYPE_UNKNOWN; nIndex++) {
-        if (_strcmpi(lpTypeName, g_lpObjectNames[nIndex]) == 0)
-            return nIndex;
-    }
-
-    //
-    // In Win8 the following Win32k object was named 
-    // CompositionSurface, in Win8.1 MS renamed it to
-    // Composition, handle this.
-    //
-    if (_strcmpi(lpTypeName, L"CompositionSurface") == 0) {
-        return TYPE_COMPOSITION;
-    }
-
-    //
-    // In Win10 TH1 the following ntos object was named 
-    // NetworkNamespace, later in Win10 updates MS renamed it to
-    // NdisCmState, handle this.
-    //
-/*    if (_strcmpi(lpTypeName, L"NetworkNamespace") == 0) {
-        return TYPE_NDISCMSTATE;
-    }*/
-
-    return TYPE_UNKNOWN;
+    return ObjectTypeUnknown;
 }
 
 /*
@@ -746,16 +967,18 @@ VOID supRunAsAdmin(
     VOID
 )
 {
-    SHELLEXECUTEINFOW shinfo;
+    SHELLEXECUTEINFO shinfo;
     WCHAR szPath[MAX_PATH + 1];
     RtlSecureZeroMemory(&szPath, sizeof(szPath));
-    if (GetModuleFileNameW(NULL, szPath, MAX_PATH)) {
+    if (GetModuleFileName(NULL, szPath, MAX_PATH)) {
         RtlSecureZeroMemory(&shinfo, sizeof(shinfo));
         shinfo.cbSize = sizeof(shinfo);
-        shinfo.lpVerb = L"runas";
+        shinfo.lpVerb = TEXT("runas");
         shinfo.lpFile = szPath;
         shinfo.nShow = SW_SHOW;
-        if (ShellExecuteExW(&shinfo)) {
+        if (g_WinObj.EnableExperimentalFeatures)
+            shinfo.lpParameters = TEXT("-exp");
+        if (ShellExecuteEx(&shinfo)) {
             PostQuitMessage(0);
         }
     }
@@ -774,7 +997,7 @@ VOID supShowProperties(
     _In_ LPWSTR lpFileName
 )
 {
-    SHELLEXECUTEINFOW shinfo;
+    SHELLEXECUTEINFO shinfo;
 
     if (lpFileName == NULL) {
         return;
@@ -784,12 +1007,11 @@ VOID supShowProperties(
     shinfo.cbSize = sizeof(shinfo);
     shinfo.fMask = SEE_MASK_INVOKEIDLIST | SEE_MASK_FLAG_NO_UI;
     shinfo.hwnd = hwndDlg;
-    shinfo.lpVerb = L"properties";
+    shinfo.lpVerb = TEXT("properties");
     shinfo.lpFile = lpFileName;
     shinfo.nShow = SW_SHOWNORMAL;
     ShellExecuteEx(&shinfo);
 }
-
 
 /*
 * supUserIsFullAdmin
@@ -814,25 +1036,27 @@ BOOL supUserIsFullAdmin(
     SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
     PSID AdministratorsGroup = NULL;
 
-    status = NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken);
-    if (!NT_SUCCESS(status))
-        return bResult;
+    hToken = supGetCurrentProcessToken();
+    if (hToken == NULL)
+        return FALSE;
 
     do {
-        if (!AllocateAndInitializeSid(
+        if (!NT_SUCCESS(RtlAllocateAndInitializeSid(
             &NtAuthority,
             2,
             SECURITY_BUILTIN_DOMAIN_RID,
             DOMAIN_ALIAS_RID_ADMINS,
             0, 0, 0, 0, 0, 0,
-            &AdministratorsGroup))
+            &AdministratorsGroup)))
+        {
             break;
+        }
 
         status = NtQueryInformationToken(hToken, TokenGroups, NULL, 0, &ReturnLength);
         if (status != STATUS_BUFFER_TOO_SMALL)
             break;
 
-        pTkGroups = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)ReturnLength);
+        pTkGroups = (PTOKEN_GROUPS)supHeapAlloc((SIZE_T)ReturnLength);
         if (pTkGroups == NULL)
             break;
 
@@ -841,7 +1065,7 @@ BOOL supUserIsFullAdmin(
             if (pTkGroups->GroupCount > 0)
                 for (i = 0; i < pTkGroups->GroupCount; i++) {
                     Attributes = pTkGroups->Groups[i].Attributes;
-                    if (EqualSid(AdministratorsGroup, pTkGroups->Groups[i].Sid))
+                    if (RtlEqualSid(AdministratorsGroup, pTkGroups->Groups[i].Sid))
                         if (
                             (Attributes & SE_GROUP_ENABLED) &&
                             (!(Attributes & SE_GROUP_USE_FOR_DENY_ONLY))
@@ -852,12 +1076,12 @@ BOOL supUserIsFullAdmin(
                         }
                 }
         }
-        HeapFree(GetProcessHeap(), 0, pTkGroups);
+        supHeapFree(pTkGroups);
 
     } while (cond);
 
     if (AdministratorsGroup != NULL) {
-        FreeSid(AdministratorsGroup);
+        RtlFreeSid(AdministratorsGroup);
     }
 
     NtClose(hToken);
@@ -865,21 +1089,22 @@ BOOL supUserIsFullAdmin(
 }
 
 /*
-* supIsSymlink
+* supxIsSymlink
 *
 * Purpose:
 *
 * Tests if the current item type is Symbolic link.
 *
 */
-BOOL supIsSymlink(
-    INT iItem
+BOOL supxIsSymlink(
+    _In_ HWND hwndList,
+    _In_ INT iItem
 )
 {
     WCHAR ItemText[MAX_PATH + 1];
     RtlSecureZeroMemory(ItemText, sizeof(ItemText));
-    ListView_GetItemText(ObjectList, iItem, 1, ItemText, MAX_PATH);
-    return (_strcmpi(ItemText, g_lpObjectNames[TYPE_SYMLINK]) == 0);
+    ListView_GetItemText(hwndList, iItem, 1, ItemText, MAX_PATH);
+    return (_strcmpi(ItemText, g_ObjectTypes[ObjectTypeSymbolicLink].Name) == 0);
 }
 
 /*
@@ -891,21 +1116,22 @@ BOOL supIsSymlink(
 *
 */
 VOID supHandleTreePopupMenu(
-    HWND hwnd,
-    LPPOINT point
+    _In_ HWND hwnd,
+    _In_ LPPOINT point
 )
 {
     HMENU hMenu;
 
     hMenu = CreatePopupMenu();
-    if (hMenu == NULL) return;
-    InsertMenu(hMenu, 0, MF_BYCOMMAND, ID_OBJECT_PROPERTIES, T_PROPERTIES);
+    if (hMenu) {
+        InsertMenu(hMenu, 0, MF_BYCOMMAND, ID_OBJECT_PROPERTIES, T_PROPERTIES);
 
-    supSetMenuIcon(hMenu, ID_OBJECT_PROPERTIES,
-        (ULONG_PTR)ImageList_ExtractIcon(g_hInstance, ToolBarMenuImages, 0));
+        supSetMenuIcon(hMenu, ID_OBJECT_PROPERTIES,
+            (ULONG_PTR)ImageList_ExtractIcon(g_WinObj.hInstance, g_ToolBarMenuImages, 0));
 
-    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_LEFTALIGN, point->x, point->y, 0, hwnd, NULL);
-    DestroyMenu(hMenu);
+        TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_LEFTALIGN, point->x, point->y, 0, hwnd, NULL);
+        DestroyMenu(hMenu);
+    }
 }
 
 /*
@@ -917,9 +1143,10 @@ VOID supHandleTreePopupMenu(
 *
 */
 VOID supHandleObjectPopupMenu(
-    HWND hwnd,
-    int iItem,
-    LPPOINT point
+    _In_ HWND hwnd,
+    _In_ HWND hwndlv,
+    _In_ INT iItem,
+    _In_ LPPOINT point
 )
 {
     HMENU hMenu;
@@ -931,12 +1158,12 @@ VOID supHandleObjectPopupMenu(
     InsertMenu(hMenu, 0, MF_BYCOMMAND, ID_OBJECT_PROPERTIES, T_PROPERTIES);
 
     supSetMenuIcon(hMenu, ID_OBJECT_PROPERTIES,
-        (ULONG_PTR)ImageList_ExtractIcon(g_hInstance, ToolBarMenuImages, 0));
+        (ULONG_PTR)ImageList_ExtractIcon(g_WinObj.hInstance, g_ToolBarMenuImages, 0));
 
-    if (supIsSymlink(iItem)) {
+    if (supxIsSymlink(hwndlv, iItem)) {
         InsertMenu(hMenu, 1, MF_BYCOMMAND, ID_OBJECT_GOTOLINKTARGET, T_GOTOLINKTARGET);
         supSetMenuIcon(hMenu, ID_OBJECT_GOTOLINKTARGET,
-            (ULONG_PTR)ImageList_ExtractIcon(g_hInstance, ListViewImages, ID_FROM_VALUE(IDI_ICON_SYMLINK)));
+            (ULONG_PTR)ImageList_ExtractIcon(g_WinObj.hInstance, g_ListViewImages, ID_FROM_VALUE(IDI_ICON_SYMLINK)));
         uEnable &= ~MF_GRAYED;
     }
     EnableMenuItem(GetSubMenu(GetMenu(hwnd), 2), ID_OBJECT_GOTOLINKTARGET, uEnable);
@@ -954,12 +1181,12 @@ VOID supHandleObjectPopupMenu(
 *
 */
 VOID supSetMenuIcon(
-    HMENU hMenu,
-    UINT Item,
-    ULONG_PTR IconData
+    _In_ HMENU hMenu,
+    _In_ UINT Item,
+    _In_ ULONG_PTR IconData
 )
 {
-    MENUITEMINFOW mii;
+    MENUITEMINFO mii;
     RtlSecureZeroMemory(&mii, sizeof(mii));
     mii.cbSize = sizeof(mii);
     mii.fMask = MIIM_BITMAP | MIIM_DATA;
@@ -977,7 +1204,7 @@ VOID supSetMenuIcon(
 *
 */
 VOID supCreateToolbarButtons(
-    HWND hWndToolbar
+    _In_ HWND hWndToolbar
 )
 {
     TBBUTTON tbButtons[5];
@@ -1007,8 +1234,8 @@ VOID supCreateToolbarButtons(
     tbButtons[4].idCommand = ID_FIND_FINDOBJECT;
     tbButtons[4].fsState = TBSTATE_ENABLED;
 
-    SendMessage(hWndToolbar, TB_SETIMAGELIST, 0, (LPARAM)ToolBarMenuImages);
-    SendMessageW(hWndToolbar, TB_LOADIMAGES, (WPARAM)IDB_STD_SMALL_COLOR, (LPARAM)HINST_COMMCTRL);
+    SendMessage(hWndToolbar, TB_SETIMAGELIST, 0, (LPARAM)g_ToolBarMenuImages);
+    SendMessage(hWndToolbar, TB_LOADIMAGES, (WPARAM)IDB_STD_SMALL_COLOR, (LPARAM)HINST_COMMCTRL);
 
     SendMessage(hWndToolbar, TB_BUTTONSTRUCTSIZE,
         (WPARAM)sizeof(TBBUTTON), 0);
@@ -1019,18 +1246,18 @@ VOID supCreateToolbarButtons(
 }
 
 /*
-* supQueryKnownDllsLink
+* supxQueryKnownDllsLink
 *
 * Purpose:
 *
 * Expand KnownDlls symbolic link.
 *
-* Only internal use, returns FALSE on any error.
+* Returns FALSE on any error.
 *
 */
-BOOL supQueryKnownDllsLink(
-    PUNICODE_STRING ObjectName,
-    PVOID *lpKnownDllsBuffer
+BOOL supxQueryKnownDllsLink(
+    _In_ PUNICODE_STRING ObjectName,
+    _In_ PVOID *lpKnownDllsBuffer
 )
 {
     BOOL                bResult = FALSE, cond = FALSE;
@@ -1061,7 +1288,7 @@ BOOL supQueryKnownDllsLink(
         }
 
         memIO = bytesNeeded + sizeof(UNICODE_NULL);
-        lpDataBuffer = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, memIO);
+        lpDataBuffer = (LPWSTR)supHeapAlloc(memIO);
         if (lpKnownDllsBuffer) {
             KnownDlls.Buffer = lpDataBuffer;
             KnownDlls.Length = (USHORT)bytesNeeded;
@@ -1078,61 +1305,6 @@ BOOL supQueryKnownDllsLink(
 }
 
 /*
-* supMapNtdllCopy
-*
-* Purpose:
-*
-* Load copy of ntdll from disk.
-*
-*/
-VOID supMapNtdllCopy(
-    VOID
-)
-{
-    BOOL   cond = FALSE;
-    HANDLE hFile = INVALID_HANDLE_VALUE, hFileMapping = NULL;
-    PVOID  ImagePtr = NULL;
-    WCHAR  szDllPath[MAX_PATH + 20];
-
-    do {
-
-        RtlSecureZeroMemory(szDllPath, sizeof(szDllPath));
-        if (GetSystemDirectory(szDllPath, MAX_PATH) == 0)
-            break;
-
-        _strcat(szDllPath, TEXT("\\ntdll.dll"));
-
-        hFile = CreateFile(szDllPath, GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-            OPEN_EXISTING, 0, NULL);
-
-        if (hFile == INVALID_HANDLE_VALUE)
-            break;
-
-        hFileMapping = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-        if (hFileMapping == NULL)
-            break;
-
-        ImagePtr = MapViewOfFile(hFileMapping, FILE_MAP_READ, 0, 0, 0);
-        if (ImagePtr == NULL)
-            break;
-
-        g_NtdllModule = peldrLoadImage(ImagePtr, NULL);
-
-        CloseHandle(hFile);
-        hFile = INVALID_HANDLE_VALUE;
-
-    } while (cond);
-
-    if (hFile != INVALID_HANDLE_VALUE)
-        CloseHandle(hFile);
-
-    if (hFileMapping != NULL)
-        CloseHandle(hFileMapping);
-
-}
-
-/*
 * supInit
 *
 * Purpose:
@@ -1143,21 +1315,18 @@ VOID supMapNtdllCopy(
 *
 */
 VOID supInit(
-    BOOL IsFullAdmin
+    _In_ BOOL IsFullAdmin
 )
 {
-    RtlSecureZeroMemory(&g_enumParams, sizeof(g_enumParams));
-
     supQueryKnownDlls();
     kdInit(IsFullAdmin);
 
-    if (IsFullAdmin != FALSE) {
-        g_enumParams.scmSnapshot = supCreateSCMSnapshot(&g_enumParams.scmNumberOfEntries);
-        supMapNtdllCopy();
+    if (IsFullAdmin) {
+        supCreateSCMSnapshot(SERVICE_DRIVER, NULL);
     }
 
-    g_enumParams.sapiDB = sapiCreateSetupDBSnapshot();
-    g_pObjectTypesInfo = supGetObjectTypesInfo();
+    sapiCreateSetupDBSnapshot();
+    g_pObjectTypesInfo = (POBJECT_TYPES_INFORMATION)supGetObjectTypesInfo();
 
     ExApiSetInit();
 }
@@ -1178,22 +1347,14 @@ VOID supShutdown(
 {
     kdShutdown();
 
-    supFreeSCMSnapshot(g_enumParams.scmSnapshot);
-    sapiFreeSnapshot(g_enumParams.sapiDB);
+    supFreeSCMSnapshot(NULL);
+    sapiFreeSnapshot();
 
-    if (g_pObjectTypesInfo) HeapFree(GetProcessHeap(), 0, g_pObjectTypesInfo);
-
-    if (TreeViewImages) ImageList_Destroy(TreeViewImages);
-    if (ListViewImages) ImageList_Destroy(ListViewImages);
-    if (ToolBarMenuImages) ImageList_Destroy(ToolBarMenuImages);
-
-    if (g_lpKnownDlls32) HeapFree(GetProcessHeap(), 0, g_lpKnownDlls32);
-    if (g_lpKnownDlls64) HeapFree(GetProcessHeap(), 0, g_lpKnownDlls64);
-
-    if (g_SdtTable) HeapFree(GetProcessHeap(), 0, g_SdtTable);
-    if (g_NtdllModule) {
-        VirtualFree(g_NtdllModule, 0, MEM_RELEASE);
-    }
+    if (g_pObjectTypesInfo) supHeapFree(g_pObjectTypesInfo);
+    if (g_lpKnownDlls32) supHeapFree(g_lpKnownDlls32);
+    if (g_lpKnownDlls64) supHeapFree(g_lpKnownDlls64);
+    if (g_pSDT) supHeapFree(g_pSDT);
+    if (g_pSDTShadow) supHeapFree(g_pSDTShadow);
 }
 
 /*
@@ -1213,11 +1374,10 @@ VOID supQueryKnownDlls(
     g_lpKnownDlls32 = NULL;
     g_lpKnownDlls64 = NULL;
 
-    RtlSecureZeroMemory(&KnownDlls, sizeof(KnownDlls));
     RtlInitUnicodeString(&KnownDlls, L"\\KnownDlls32\\KnownDllPath");
-    supQueryKnownDllsLink(&KnownDlls, &g_lpKnownDlls32);
+    supxQueryKnownDllsLink(&KnownDlls, (PVOID*)&g_lpKnownDlls32);
     RtlInitUnicodeString(&KnownDlls, L"\\KnownDlls\\KnownDllPath");
-    supQueryKnownDllsLink(&KnownDlls, &g_lpKnownDlls64);
+    supxQueryKnownDllsLink(&KnownDlls, (PVOID*)&g_lpKnownDlls64);
 }
 
 /*
@@ -1231,17 +1391,18 @@ VOID supQueryKnownDlls(
 *
 */
 BOOL supEnablePrivilege(
-    _In_ DWORD	PrivilegeName,
-    _In_ BOOL	fEnable
+    _In_ DWORD PrivilegeName,
+    _In_ BOOL fEnable
 )
 {
     BOOL             bResult = FALSE;
     NTSTATUS         status;
+    ULONG            dummy;
     HANDLE           hToken;
     TOKEN_PRIVILEGES TokenPrivileges;
 
     status = NtOpenProcessToken(
-        GetCurrentProcess(),
+        NtCurrentProcess(),
         TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
         &hToken);
 
@@ -1254,7 +1415,7 @@ BOOL supEnablePrivilege(
     TokenPrivileges.Privileges[0].Luid.HighPart = 0;
     TokenPrivileges.Privileges[0].Attributes = (fEnable) ? SE_PRIVILEGE_ENABLED : 0;
     status = NtAdjustPrivilegesToken(hToken, FALSE, &TokenPrivileges,
-        sizeof(TOKEN_PRIVILEGES), (PTOKEN_PRIVILEGES)NULL, NULL);
+        sizeof(TOKEN_PRIVILEGES), (PTOKEN_PRIVILEGES)NULL, (PULONG)&dummy);
     if (status == STATUS_NOT_ALL_ASSIGNED) {
         status = STATUS_PRIVILEGE_NOT_HELD;
     }
@@ -1274,10 +1435,10 @@ BOOL supEnablePrivilege(
 *
 */
 BOOL supQueryLinkTarget(
-    _In_opt_	HANDLE hRootDirectory,
-    _In_		PUNICODE_STRING ObjectName,
-    _Inout_		LPWSTR Buffer,
-    _In_		DWORD cbBuffer //size of buffer in bytes
+    _In_opt_ HANDLE hRootDirectory,
+    _In_ PUNICODE_STRING ObjectName,
+    _Inout_ LPWSTR Buffer,
+    _In_ DWORD cbBuffer //size of buffer in bytes
 )
 {
     BOOL                bResult = FALSE;
@@ -1287,12 +1448,8 @@ BOOL supQueryLinkTarget(
     UNICODE_STRING      InfoString;
     OBJECT_ATTRIBUTES   Obja;
 
-    if (
-        (ObjectName == NULL) ||
-        (Buffer == NULL) ||
-        (cbBuffer < sizeof(UNICODE_NULL))
-        )
-    {
+    if ((cbBuffer == 0) || (Buffer == NULL)) {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
         return bResult;
     }
 
@@ -1328,44 +1485,157 @@ BOOL supQueryLinkTarget(
 *
 */
 BOOL supQueryProcessName(
-    _In_		DWORD dwProcessId,
-    _In_		PVOID ProcessList,
-    _Inout_		LPWSTR Buffer,
-    _In_		DWORD ccBuffer //size of buffer in chars
+    _In_ ULONG_PTR dwProcessId,
+    _In_ PVOID ProcessList,
+    _Inout_ LPWSTR Buffer,
+    _In_ DWORD ccBuffer //size of buffer in chars
 )
 {
-    PSYSTEM_PROCESSES_INFORMATION pList = ProcessList;
+    ULONG NextEntryDelta = 0;
+    union {
+        PSYSTEM_PROCESSES_INFORMATION Processes;
+        PBYTE ListRef;
+    } List;
 
-    if ((ProcessList == NULL) || (Buffer == NULL) || (ccBuffer == 0))
-        return FALSE;
+    List.ListRef = (PBYTE)ProcessList;
 
-    for (;;) {
-        if ((DWORD)pList->UniqueProcessId == dwProcessId) {
-            _strncpy(Buffer, ccBuffer, pList->ImageName.Buffer, pList->ImageName.Length / sizeof(WCHAR));
+    do {
+
+        List.ListRef += NextEntryDelta;
+
+        if ((ULONG_PTR)List.Processes->UniqueProcessId == dwProcessId) {
+
+            _strncpy(
+                Buffer,
+                ccBuffer,
+                List.Processes->ImageName.Buffer,
+                List.Processes->ImageName.Length / sizeof(WCHAR));
+
             return TRUE;
         }
-        if (pList->NextEntryDelta == 0)
-            break;
-        pList = (PSYSTEM_PROCESSES_INFORMATION)(((LPBYTE)pList) + pList->NextEntryDelta);
-    }
+
+        NextEntryDelta = List.Processes->NextEntryDelta;
+
+    } while (NextEntryDelta);
+
     return FALSE;
 }
 
 /*
-* supFreeScmSnapshot
+* supQueryProcessNameByEPROCESS
 *
 * Purpose:
 *
-* Releases SCM snapshot allocated memory.
+* Lookups process name by given process object address.
+*
+* If nothing found return FALSE.
 *
 */
-VOID supFreeSCMSnapshot(
-    _In_ PVOID Snapshot
+BOOL supQueryProcessNameByEPROCESS(
+    _In_ ULONG_PTR ValueOfEPROCESS,
+    _In_ PVOID ProcessList,
+    _Inout_ LPWSTR Buffer,
+    _In_ DWORD ccBuffer //size of buffer in chars
 )
 {
-    if (Snapshot) {
-        VirtualFree(Snapshot, 0, MEM_RELEASE);
+    BOOL bFound = FALSE;
+    DWORD  CurrentProcessId = GetCurrentProcessId();
+    ULONG NextEntryDelta = 0, NumberOfProcesses = 0, i, j, ProcessListCount = 0;
+    HANDLE hProcess = NULL;
+    OBEX_PROCESS_LOOKUP_ENTRY *SavedProcessList;
+    PSYSTEM_HANDLE_INFORMATION_EX pHandles;
+
+    union {
+        PSYSTEM_PROCESSES_INFORMATION Processes;
+        PBYTE ListRef;
+    } List;
+
+    OBJECT_ATTRIBUTES obja = RTL_INIT_OBJECT_ATTRIBUTES((PUNICODE_STRING)NULL, 0);
+
+    List.ListRef = (PBYTE)ProcessList;
+
+    //
+    // Calculate process handle list size.
+    //
+    do {
+
+        List.ListRef += NextEntryDelta;
+
+        if (List.Processes->ThreadCount)
+            NumberOfProcesses += 1;
+
+        NextEntryDelta = List.Processes->NextEntryDelta;
+
+    } while (NextEntryDelta);
+
+    List.ListRef = (PBYTE)ProcessList;
+
+    ProcessListCount = 0;
+    NextEntryDelta = 0;
+
+    //
+    // Build process handle list.
+    //
+    SavedProcessList = (OBEX_PROCESS_LOOKUP_ENTRY*)supHeapAlloc(NumberOfProcesses * sizeof(OBEX_PROCESS_LOOKUP_ENTRY));
+    if (SavedProcessList) {
+
+        do {
+            List.ListRef += NextEntryDelta;
+
+            if (List.Processes->ThreadCount) {
+
+                if (NT_SUCCESS(NtOpenProcess(
+                    &hProcess,
+                    PROCESS_QUERY_LIMITED_INFORMATION,
+                    &obja,
+                    &List.Processes->Threads[0].ClientId)))
+                {
+                    SavedProcessList[ProcessListCount].hProcess = hProcess;
+                    SavedProcessList[ProcessListCount].EntryPtr = List.ListRef;
+                    ProcessListCount += 1;
+                }
+            }
+            NextEntryDelta = List.Processes->NextEntryDelta;
+        } while (NextEntryDelta);
+
+        //
+        // Lookup this handles in system handle list.
+        //
+        pHandles = (PSYSTEM_HANDLE_INFORMATION_EX)supGetSystemInfo(SystemExtendedHandleInformation);
+        if (pHandles) {
+            for (i = 0; i < pHandles->NumberOfHandles; i++)
+                if (pHandles->Handles[i].UniqueProcessId == (ULONG_PTR)CurrentProcessId) //current process id
+                    for (j = 0; j < ProcessListCount; j++)
+                        if (pHandles->Handles[i].HandleValue == (ULONG_PTR)SavedProcessList[j].hProcess) //same handle value
+                            if ((ULONG_PTR)pHandles->Handles[i].Object == ValueOfEPROCESS) { //save object value
+
+                                List.ListRef = SavedProcessList[j].EntryPtr;
+
+                                _strncpy(
+                                    Buffer,
+                                    ccBuffer,
+                                    List.Processes->ImageName.Buffer,
+                                    List.Processes->ImageName.Length / sizeof(WCHAR));
+
+                                bFound = TRUE;
+                                break;
+                            }
+
+            supHeapFree(pHandles);
+        }
+
+        //
+        // Destroy process handle list.
+        //
+        for (i = 0; i < ProcessListCount; i++) {
+            if (SavedProcessList[i].hProcess)
+                NtClose(SavedProcessList[i].hProcess);
+        }
+
+        supHeapFree(SavedProcessList);
     }
+
+    return bFound;
 }
 
 /*
@@ -1375,21 +1645,18 @@ VOID supFreeSCMSnapshot(
 *
 * Collects SCM information for drivers description.
 *
-* Returned buffer must be freed with supFreeScmSnapshot after usage.
+* Use supFreeSCMSnapshot to free returned buffer.
 *
 */
-PVOID supCreateSCMSnapshot(
-    PSIZE_T lpNumberOfEntries
+BOOL supCreateSCMSnapshot(
+    _In_ ULONG ServiceType,
+    _Out_opt_ SCMDB *Snapshot
 )
 {
     BOOL      cond = FALSE, bResult = FALSE;
     SC_HANDLE schSCManager;
-    DWORD     dwBytesNeeded, dwServicesReturned, dwSize, dwSlack;
+    DWORD     dwBytesNeeded = 0, dwServicesReturned = 0, dwSize;
     PVOID     Services = NULL;
-
-    if (lpNumberOfEntries) {
-        *lpNumberOfEntries = 0;
-    }
 
     do {
         schSCManager = OpenSCManager(NULL,
@@ -1397,55 +1664,175 @@ PVOID supCreateSCMSnapshot(
             SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE
         );
 
-        if (schSCManager == NULL) {
+        if (schSCManager == NULL)
             break;
-        }
 
-        // query required memory size for snapshot
-        dwBytesNeeded = 0;
-        dwServicesReturned = 0;
-
-        dwSize = 0x1000;
-        Services = VirtualAlloc(NULL, dwSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (Services == NULL) {
+        //
+        // Query required memory size for snapshot.
+        //
+        dwSize = PAGE_SIZE;
+        Services = supVirtualAlloc(dwSize);
+        if (Services == NULL)
             break;
-        }
 
-        bResult = EnumServicesStatusEx(schSCManager, SC_ENUM_PROCESS_INFO, SERVICE_DRIVER,
-            SERVICE_STATE_ALL, Services, dwSize, &dwBytesNeeded, &dwServicesReturned, NULL, NULL);
+        bResult = EnumServicesStatusEx(
+            schSCManager,
+            SC_ENUM_PROCESS_INFO,
+            ServiceType,
+            SERVICE_STATE_ALL,
+            (LPBYTE)Services,
+            dwSize,
+            &dwBytesNeeded,
+            &dwServicesReturned,
+            NULL,
+            NULL);
+
         if (bResult == FALSE) {
-
             if (GetLastError() == ERROR_MORE_DATA) {
-                // allocate memory block with page aligned size
-                VirtualFree(Services, 0, MEM_RELEASE);
-                dwSize = (DWORD)(dwBytesNeeded + sizeof(ENUM_SERVICE_STATUS_PROCESS));
-                dwSlack = dwSize % 0x1000;
-                if (dwSlack > 0) dwSize = dwSize + 0x1000 - dwSlack;
-
-                Services = VirtualAlloc(NULL, dwSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-                if (Services == NULL) {
+                //
+                // Allocate required buffer.
+                //
+                supVirtualFree(Services);
+                dwSize = (DWORD)ALIGN_UP_BY(dwBytesNeeded + sizeof(ENUM_SERVICE_STATUS_PROCESS), PAGE_SIZE);
+                Services = supVirtualAlloc(dwSize);
+                if (Services == NULL)
                     break;
-                }
 
-                if (!EnumServicesStatusEx(schSCManager, SC_ENUM_PROCESS_INFO, SERVICE_DRIVER,
-                    SERVICE_STATE_ALL, Services, dwSize, &dwBytesNeeded, &dwServicesReturned, NULL, NULL))
-                {
-                    VirtualFree(Services, 0, MEM_RELEASE);
+                bResult = EnumServicesStatusEx(
+                    schSCManager,
+                    SC_ENUM_PROCESS_INFO,
+                    ServiceType,
+                    SERVICE_STATE_ALL,
+                    (LPBYTE)Services,
+                    dwSize,
+                    &dwBytesNeeded,
+                    &dwServicesReturned,
+                    NULL,
+                    NULL);
+
+                if (!bResult) {
+                    supVirtualFree(Services);
                     Services = NULL;
+                    dwServicesReturned = 0;
                     break;
                 }
             } //ERROR_MORE_DATA
         } //bResult == FALSE;
 
-        // also return actual number of services
-        if (lpNumberOfEntries) {
-            *lpNumberOfEntries = dwServicesReturned;
-        }
-
         CloseServiceHandle(schSCManager);
+
     } while (cond);
 
-    return Services;
+    if (Snapshot) {
+        Snapshot->Entries = Services;
+        Snapshot->NumberOfEntries = dwServicesReturned;
+    }
+    else {
+        RtlEnterCriticalSection(&g_WinObj.Lock);
+        g_scmDB.Entries = Services;
+        g_scmDB.NumberOfEntries = dwServicesReturned;
+        RtlLeaveCriticalSection(&g_WinObj.Lock);
+    }
+
+    return bResult;
+}
+
+/*
+* supFreeSCMSnapshot
+*
+* Purpose:
+*
+* Destroys SCM snapshot buffer.
+*
+*/
+VOID supFreeSCMSnapshot(
+    _In_opt_ SCMDB *Snapshot)
+{
+    if (Snapshot) {
+        if ((Snapshot->Entries) && (Snapshot->NumberOfEntries))
+            supVirtualFree(Snapshot->Entries);
+        Snapshot->NumberOfEntries = 0;
+        Snapshot->Entries = NULL;
+    }
+    else {
+        RtlEnterCriticalSection(&g_WinObj.Lock);
+        supVirtualFree(g_scmDB.Entries);
+        g_scmDB.Entries = NULL;
+        g_scmDB.NumberOfEntries = 0;
+        RtlLeaveCriticalSection(&g_WinObj.Lock);
+    }
+}
+
+/*
+* sapiQueryDeviceProperty
+*
+* Purpose:
+*
+* Query Device Propery from snapshot data.
+*
+*/
+BOOL sapiQueryDeviceProperty(
+    _In_ HANDLE SnapshotHeap,
+    _In_ HDEVINFO hDevInfo,
+    _In_ SP_DEVINFO_DATA *pDevInfoData,
+    _In_ ULONG Property,
+    _Out_ LPWSTR *PropertyBuffer,
+    _Out_opt_ ULONG *PropertyBufferSize
+)
+{
+    BOOL   result;
+    DWORD  dataType = 0, dataSize, returnLength = 0;
+    LPWSTR lpProperty;
+
+    *PropertyBuffer = NULL;
+
+    if (PropertyBufferSize)
+        *PropertyBufferSize = 0;
+
+    dataSize = (1 + MAX_PATH) * sizeof(WCHAR);
+    lpProperty = (LPWSTR)RtlAllocateHeap(SnapshotHeap, HEAP_ZERO_MEMORY, dataSize);
+    if (lpProperty == NULL)
+        return FALSE;
+
+    result = SetupDiGetDeviceRegistryProperty(hDevInfo,
+        pDevInfoData,
+        Property,
+        &dataType,
+        (PBYTE)lpProperty,
+        dataSize,
+        &returnLength);
+
+    if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+
+        RtlFreeHeap(SnapshotHeap, 0, lpProperty);
+        dataSize = returnLength;
+        lpProperty = (LPWSTR)RtlAllocateHeap(SnapshotHeap, HEAP_ZERO_MEMORY, dataSize);
+        if (lpProperty) {
+
+            result = SetupDiGetDeviceRegistryProperty(hDevInfo,
+                pDevInfoData,
+                Property,
+                &dataType,
+                (PBYTE)lpProperty,
+                dataSize,
+                &returnLength);
+
+        }
+
+    }
+
+    if (!result) {
+        if (lpProperty) {
+            RtlFreeHeap(SnapshotHeap, 0, lpProperty);
+            lpProperty = NULL;
+        }
+        dataSize = 0;
+    }
+
+    *PropertyBuffer = lpProperty;
+    if (PropertyBufferSize)
+        *PropertyBufferSize = dataSize;
+    return result;
 }
 
 /*
@@ -1455,105 +1842,77 @@ PVOID supCreateSCMSnapshot(
 *
 * Collects Setup API information to the linked list.
 *
-* Returned buffer must be freed with sapiFreeSnapshot after usage.
-*
 */
-PVOID sapiCreateSetupDBSnapshot(
+BOOL sapiCreateSetupDBSnapshot(
     VOID
 )
 {
-    BOOL            cond = FALSE;
-    DWORD           i, DataType = 0, DataSize, ReturnedDataSize = 0;
-    PSAPIDBOBJ      sObj;
+    BOOL            bResult = FALSE, bFailed = FALSE;
+    DWORD           i, ReturnedDataSize = 0;
     SP_DEVINFO_DATA DeviceInfoData;
     PSAPIDBENTRY    Entry;
+    HANDLE          Heap;
+    HDEVINFO        hDevInfo;
 
-    sObj = VirtualAlloc(NULL, sizeof(SAPIDBOBJ), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (sObj == NULL)
-        return NULL;
+    Heap = RtlCreateHeap(HEAP_GROWABLE, NULL, 0, 0, NULL, NULL);
+    if (Heap == NULL) {
+        return FALSE;
+    }
 
-    sObj->hDevInfo = NULL;
-    sObj->sapiDBHead.Blink = NULL;
-    sObj->sapiDBHead.Flink = NULL;
-    InitializeCriticalSection(&sObj->objCS);
+    RtlSetHeapInformation(Heap, HeapEnableTerminationOnCorruption, NULL, 0);
+    g_sapiDB.sapiHeap = Heap;
 
-    do {
-        sObj->hDevInfo = SetupDiGetClassDevsW(NULL, NULL, NULL, DIGCF_PRESENT | DIGCF_ALLCLASSES);
+    hDevInfo = SetupDiGetClassDevs(NULL, NULL, NULL, DIGCF_PRESENT | DIGCF_ALLCLASSES);
+    if (hDevInfo != INVALID_HANDLE_VALUE) {
 
-        if (sObj->hDevInfo == INVALID_HANDLE_VALUE)
-            break;
+        InitializeListHead(&g_sapiDB.ListHead);
 
-        InitializeListHead(&sObj->sapiDBHead);
-
+        RtlSecureZeroMemory(&DeviceInfoData, sizeof(DeviceInfoData));
         DeviceInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
-        for (i = 0; SetupDiEnumDeviceInfo(sObj->hDevInfo, i, &DeviceInfoData); i++) {
 
-            Entry = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(SAPIDBENTRY));
-            if (Entry == NULL)
+        for (i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &DeviceInfoData); i++) {
+
+            Entry = (PSAPIDBENTRY)RtlAllocateHeap(Heap, HEAP_ZERO_MEMORY, sizeof(SAPIDBENTRY));
+            if (Entry == NULL) {
+                bFailed = TRUE;
                 break;
-
-            // first query lpDeviceName
-            DataSize = MAX_PATH * sizeof(WCHAR);
-            Entry->lpDeviceName = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, DataSize);
-            if (Entry->lpDeviceName != NULL) {
-                SetupDiGetDeviceRegistryPropertyW(sObj->hDevInfo,
-                    &DeviceInfoData,
-                    SPDRP_PHYSICAL_DEVICE_OBJECT_NAME,
-                    &DataType,
-                    (PBYTE)Entry->lpDeviceName,
-                    DataSize,
-                    &ReturnedDataSize);
-
-                // not enough memory for call, reallocate
-                if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
-
-                    HeapFree(GetProcessHeap(), 0, Entry->lpDeviceName);
-                    Entry->lpDeviceName = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ReturnedDataSize);
-                    if (Entry->lpDeviceName != NULL) {
-                        SetupDiGetDeviceRegistryPropertyW(sObj->hDevInfo,
-                            &DeviceInfoData,
-                            SPDRP_PHYSICAL_DEVICE_OBJECT_NAME,
-                            &DataType,
-                            (PBYTE)Entry->lpDeviceName,
-                            ReturnedDataSize,
-                            &ReturnedDataSize);
-                    }
-                }
             }
 
-            DataSize = MAX_PATH * sizeof(WCHAR);
-            Entry->lpDeviceDesc = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, DataSize);
-            if (Entry->lpDeviceDesc != NULL) {
-                SetupDiGetDeviceRegistryPropertyW(sObj->hDevInfo,
-                    &DeviceInfoData,
-                    SPDRP_DEVICEDESC,
-                    &DataType,
-                    (PBYTE)Entry->lpDeviceDesc,
-                    DataSize,
-                    &ReturnedDataSize);
+            //
+            // Query Device Name.
+            //
+            sapiQueryDeviceProperty(Heap,
+                hDevInfo,
+                &DeviceInfoData,
+                SPDRP_PHYSICAL_DEVICE_OBJECT_NAME,
+                &Entry->lpDeviceName,
+                &ReturnedDataSize);
 
-                // not enough memory for call, reallocate
-                if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+            //
+            // Query Device Description.
+            //
+            sapiQueryDeviceProperty(Heap,
+                hDevInfo,
+                &DeviceInfoData,
+                SPDRP_DEVICEDESC,
+                &Entry->lpDeviceDesc,
+                &ReturnedDataSize);
 
-                    HeapFree(GetProcessHeap(), 0, Entry->lpDeviceDesc);
-                    Entry->lpDeviceDesc = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ReturnedDataSize);
-                    if (Entry->lpDeviceDesc != NULL) {
-                        SetupDiGetDeviceRegistryPropertyW(sObj->hDevInfo,
-                            &DeviceInfoData,
-                            SPDRP_DEVICEDESC,
-                            &DataType,
-                            (PBYTE)Entry->lpDeviceDesc,
-                            ReturnedDataSize,
-                            &ReturnedDataSize);
-                    }
-                }
-            }
-            InsertHeadList(&sObj->sapiDBHead, &Entry->ListEntry);
-        } //for
+            InsertHeadList(&g_sapiDB.ListHead, &Entry->ListEntry);
 
-    } while (cond);
+        }
 
-    return sObj;
+        SetupDiDestroyDeviceInfoList(hDevInfo);
+
+        if (bFailed == FALSE)
+            bResult = TRUE;
+    }
+
+    if (bFailed) {
+        RtlDestroyHeap(Heap);
+        RtlSecureZeroMemory(&g_sapiDB, sizeof(g_sapiDB));
+    }
+    return bResult;
 }
 
 /*
@@ -1561,41 +1920,19 @@ PVOID sapiCreateSetupDBSnapshot(
 *
 * Purpose:
 *
-* Releases memory allocated for Setup API snapshot and linked list.
+* Destroys snapshot heap and zero linked list.
 *
 */
 VOID sapiFreeSnapshot(
-    _In_ PVOID Snapshot
+    VOID
 )
 {
-    PSAPIDBOBJ   pObj;
-    PSAPIDBENTRY Entry;
-
-    if (Snapshot == NULL)
-        return;
-
-    pObj = Snapshot;
-
-    EnterCriticalSection(&pObj->objCS);
-
-    if (pObj->hDevInfo != NULL) {
-        SetupDiDestroyDeviceInfoList(pObj->hDevInfo);
-    }
-
-    while (!IsListEmpty(&pObj->sapiDBHead)) {
-        if (pObj->sapiDBHead.Flink == NULL) break;
-        Entry = CONTAINING_RECORD(pObj->sapiDBHead.Flink, SAPIDBENTRY, ListEntry);
-        RemoveEntryList(pObj->sapiDBHead.Flink);
-        if (Entry) {
-            if (Entry->lpDeviceDesc) HeapFree(GetProcessHeap(), 0, Entry->lpDeviceDesc);
-            if (Entry->lpDeviceName) HeapFree(GetProcessHeap(), 0, Entry->lpDeviceName);
-            HeapFree(GetProcessHeap(), 0, Entry);
-        }
-    }
-
-    LeaveCriticalSection(&pObj->objCS);
-    DeleteCriticalSection(&pObj->objCS);
-    VirtualFree(pObj, 0, MEM_RELEASE);
+    RtlEnterCriticalSection(&g_WinObj.Lock);
+    RtlDestroyHeap(g_sapiDB.sapiHeap);
+    g_sapiDB.sapiHeap = NULL;
+    g_sapiDB.ListHead.Blink = NULL;
+    g_sapiDB.ListHead.Flink = NULL;
+    RtlLeaveCriticalSection(&g_WinObj.Lock);
 }
 
 /*
@@ -1607,8 +1944,8 @@ VOID sapiFreeSnapshot(
 *
 */
 BOOL WINAPI supEnumEnableChildWindows(
-    _In_  HWND hwnd,
-    _In_  LPARAM lParam
+    _In_ HWND hwnd,
+    _In_ LPARAM lParam
 )
 {
     RECT   r1;
@@ -1630,8 +1967,8 @@ BOOL WINAPI supEnumEnableChildWindows(
 *
 */
 BOOL WINAPI supEnumHideChildWindows(
-    _In_  HWND hwnd,
-    _In_  LPARAM lParam
+    _In_ HWND hwnd,
+    _In_ LPARAM lParam
 )
 {
     RECT   r1;
@@ -1649,6 +1986,20 @@ BOOL WINAPI supEnumHideChildWindows(
 #define T_WINSTA_LOCALSERVICE L"-0x0-3e5$"
 #define T_WINSTA_NETWORK_SERVICE L"-0x0-3e4$"
 
+typedef struct _WINSTA_DESC_ARRAY {
+    LPWSTR lpszWinSta;
+    LPWSTR lpszDesc;
+} WINSTA_DESC_ARRAY, *PWINSTA_DESC_ARRAY;
+
+#define MAX_KNOWN_WINSTA_DESCRIPTIONS 4
+
+WINSTA_DESC_ARRAY g_WinstaDescArray[MAX_KNOWN_WINSTA_DESCRIPTIONS] = {
+    { T_WINSTA_SYSTEM, L"System" },
+    { T_WINSTA_ANONYMOUS, L"Anonymous" },
+    { T_WINSTA_LOCALSERVICE, L"Local Service" },
+    { T_WINSTA_NETWORK_SERVICE, L"Network Service" }
+};
+
 /*
 * supQueryWinstationDescription
 *
@@ -1660,42 +2011,81 @@ BOOL WINAPI supEnumHideChildWindows(
 *
 */
 BOOL supQueryWinstationDescription(
-    _In_	LPWSTR lpWindowStationName,
-    _Inout_	LPWSTR Buffer,
-    _In_	DWORD ccBuffer //size of buffer in chars
+    _In_ LPWSTR lpWindowStationName,
+    _Inout_ LPWSTR Buffer,
+    _In_ DWORD ccBuffer //size of buffer in chars
 )
 {
     BOOL   bFound = FALSE;
     LPWSTR lpType;
 
-    if ((lpWindowStationName == NULL) || (Buffer == NULL) || (ccBuffer < MAX_PATH))
+    ULONG entryId;
+
+    if (lpWindowStationName == NULL) {
+        SetLastError(ERROR_INVALID_NAME);
         return bFound;
+    }
+
+    if ((Buffer == NULL) || (ccBuffer < MAX_PATH)) {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return bFound;
+    }
 
     lpType = NULL;
-    if (_strstri(lpWindowStationName, T_WINSTA_SYSTEM) != NULL) {
-        lpType = L"System";
-        bFound = TRUE;
-        goto Done;
+
+    for (entryId = 0; entryId < MAX_KNOWN_WINSTA_DESCRIPTIONS; entryId++) {
+
+        if (_strstri(lpWindowStationName,
+            g_WinstaDescArray[entryId].lpszWinSta) != NULL)
+        {
+            lpType = g_WinstaDescArray[entryId].lpszDesc;
+            bFound = TRUE;
+            break;
+        }
+
     }
-    if (_strstri(lpWindowStationName, T_WINSTA_ANONYMOUS) != NULL) {
-        lpType = L"Anonymous";
-        bFound = TRUE;
-        goto Done;
-    }
-    if (_strstri(lpWindowStationName, T_WINSTA_LOCALSERVICE) != NULL) {
-        lpType = L"Local Service";
-        bFound = TRUE;
-        goto Done;
-    }
-    if (_strstri(lpWindowStationName, T_WINSTA_NETWORK_SERVICE) != NULL) {
-        lpType = L"Network Service";
-        bFound = TRUE;
-    }
-Done:
-    if (bFound) {
-        wsprintf(Buffer, L"%s logon session", lpType);
-    }
+
+    if (lpType == NULL)
+        lpType = T_UnknownType;
+
+    _strcpy(Buffer, lpType);
+    _strcat(Buffer, TEXT(" logon session"));
+
     return bFound;
+}
+
+/*
+* supFindModuleEntryByName
+*
+* Purpose:
+*
+* Find Module entry for given name.
+*
+*/
+PVOID supFindModuleEntryByName(
+    _In_ PRTL_PROCESS_MODULES pModulesList,
+    _In_ LPCSTR ModuleName
+)
+{
+    ULONG i, c, off;
+    LPSTR pModuleName;
+
+    c = pModulesList->NumberOfModules;
+    if (c == 0) {
+        return NULL;
+    }
+
+    for (i = 0; i < c; i++) {
+        off = pModulesList->Modules[i].OffsetToFileName;
+        pModuleName = (LPSTR)&pModulesList->Modules[i].FullPathName[off];
+        if (pModuleName) {
+
+            if (_strcmpi_a(pModuleName, ModuleName) == 0)
+                return &pModulesList->Modules[i];
+
+        }
+    }
+    return NULL;
 }
 
 /*
@@ -1703,23 +2093,15 @@ Done:
 *
 * Purpose:
 *
-* Find Module Name for given Address.
+* Find Module Entry for given Address.
 *
 */
 ULONG supFindModuleEntryByAddress(
-    _In_	PRTL_PROCESS_MODULES pModulesList,
-    _In_	PVOID Address
+    _In_ PRTL_PROCESS_MODULES pModulesList,
+    _In_ PVOID Address
 )
 {
     ULONG i, c;
-
-    if (
-        (Address == NULL) ||
-        (pModulesList == NULL)
-        )
-    {
-        return (ULONG)-1;
-    }
 
     c = pModulesList->NumberOfModules;
     if (c == 0) {
@@ -1739,7 +2121,6 @@ ULONG supFindModuleEntryByAddress(
     return (ULONG)-1;
 }
 
-
 /*
 * supFindModuleNameByAddress
 *
@@ -1747,12 +2128,14 @@ ULONG supFindModuleEntryByAddress(
 *
 * Find Module Name for given Address.
 *
+* Buffer must be at least MAX_PATH length.
+*
 */
 BOOL supFindModuleNameByAddress(
-    _In_	PRTL_PROCESS_MODULES pModulesList,
-    _In_	PVOID Address,
+    _In_ PRTL_PROCESS_MODULES pModulesList,
+    _In_ PVOID Address,
     _Inout_	LPWSTR Buffer,
-    _In_	DWORD ccBuffer //size of buffer in chars
+    _In_ DWORD ccBuffer //size of buffer in chars
 )
 {
     ULONG i, c;
@@ -1760,12 +2143,9 @@ BOOL supFindModuleNameByAddress(
 
     PRTL_PROCESS_MODULE_INFORMATION pModule;
 
-    if (
-        (Address == NULL) ||
-        (pModulesList == NULL) ||
+    if ((pModulesList == NULL) ||
         (Buffer == NULL) ||
-        (ccBuffer < MAX_PATH)
-        )
+        (ccBuffer < MAX_PATH))
     {
         return FALSE;
     }
@@ -1815,11 +2195,13 @@ BOOL supFindModuleNameByAddress(
 *
 * Query specific type info for output in listview.
 *
+* Input buffer size must be at least MAX_PATH size.
+*
 */
 BOOL supQueryTypeInfo(
-    _In_	LPWSTR lpTypeName,
-    _Inout_	LPWSTR Buffer,
-    _In_	DWORD ccBuffer //size of buffer in chars
+    _In_ LPWSTR lpTypeName,
+    _Inout_ LPWSTR Buffer,
+    _In_ DWORD ccBuffer //size of buffer in chars
 )
 {
     BOOL  bResult = FALSE;
@@ -1827,50 +2209,51 @@ BOOL supQueryTypeInfo(
 
     POBJECT_TYPE_INFORMATION pObject;
 
-    if ((g_pObjectTypesInfo == NULL) || (Buffer == NULL)) {
+    if (g_pObjectTypesInfo == NULL) {
+        SetLastError(ERROR_INTERNAL_ERROR);
+        return bResult;
+    }
+    if ((Buffer == NULL) || (ccBuffer < MAX_PATH)) {
         SetLastError(ERROR_INSUFFICIENT_BUFFER);
         return bResult;
     }
-    if (ccBuffer < MAX_PATH) {
-        SetLastError(ERROR_INSUFFICIENT_BUFFER);
-        return bResult;
-    }
 
-    pObject = (POBJECT_TYPE_INFORMATION)&g_pObjectTypesInfo->TypeInformation;
-    for (i = 0; i < g_pObjectTypesInfo->NumberOfTypes; i++) {
+    __try {
 
+        if (g_kdctx.IsWine) {
+            pObject = OBJECT_TYPES_FIRST_ENTRY_WINE(g_pObjectTypesInfo);
+        }
+        else {
+            pObject = OBJECT_TYPES_FIRST_ENTRY(g_pObjectTypesInfo);
+        }
 
-        /*	Warning: Dxgk objects missing in this enum in Windows 10 TP
+        for (i = 0; i < g_pObjectTypesInfo->NumberOfTypes; i++) {
+            if (_strncmpi(pObject->TypeName.Buffer,
+                lpTypeName,
+                pObject->TypeName.Length / sizeof(WCHAR)) == 0)
+            {
+                for (nPool = 0; nPool < MAX_KNOWN_POOL_TYPES; nPool++) {
+                    if ((POOL_TYPE)pObject->PoolType == (POOL_TYPE)a_PoolTypes[nPool].dwValue) {
 
-            WCHAR test[1000];
-            RtlSecureZeroMemory(&test, sizeof(test));
-            wsprintfW(test, L"\nLength=%lx, MaxLen=%lx \n", pObject->TypeName.Length, pObject->TypeName.MaximumLength);
-            OutputDebugString(test);
-            _strncpy(test, MAX_PATH, pObject->TypeName.Buffer, pObject->TypeName.MaximumLength);
-            OutputDebugString(test);*/
+                        _strncpy(
+                            Buffer, ccBuffer,
+                            a_PoolTypes[nPool].lpDescription,
+                            _strlen(a_PoolTypes[nPool].lpDescription)
+                        );
 
-        if (_strncmpi(pObject->TypeName.Buffer, lpTypeName, pObject->TypeName.Length / sizeof(WCHAR)) == 0) {
-            for (nPool = 0; nPool < MAX_KNOWN_POOL_TYPES; nPool++) {
-                if ((POOL_TYPE)pObject->PoolType == (POOL_TYPE)a_PoolTypes[nPool].dwValue) {
-
-                    _strncpy(
-                        Buffer, ccBuffer,
-                        a_PoolTypes[nPool].lpDescription,
-                        _strlen(a_PoolTypes[nPool].lpDescription)
-                    );
-
-                    break;
-
+                        break;
+                    }
                 }
+                bResult = TRUE;
+                break;
             }
-            bResult = TRUE;
+
+            pObject = OBJECT_TYPES_NEXT_ENTRY(pObject);
         }
-        if (bResult) {
-            break;
-        }
-        //next entry located after the aligned type name buffer
-        pObject = (POBJECT_TYPE_INFORMATION)((PCHAR)(pObject + 1) +
-            ALIGN_UP(pObject->TypeName.MaximumLength, sizeof(ULONG_PTR)));
+
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return FALSE;
     }
     return bResult;
 }
@@ -1880,73 +2263,77 @@ BOOL supQueryTypeInfo(
 *
 * Purpose:
 *
-* Query device description from Setup API DB dump
+* Query device description from Setup API DB dump.
+*
+* Buffer should be at least MAX_PATH length in chars.
 *
 */
 BOOL supQueryDeviceDescription(
-    _In_	LPWSTR lpDeviceName,
-    _In_	PVOID Snapshot,
-    _Inout_	LPWSTR Buffer,
-    _In_	DWORD ccBuffer //size of buffer in chars
+    _In_ LPWSTR lpDeviceName,
+    _Inout_ LPWSTR Buffer,
+    _In_ DWORD ccBuffer //size of buffer in chars
 )
 {
     BOOL         bResult, bIsRoot;
     SIZE_T       Length;
     LPWSTR       lpFullDeviceName = NULL;
-    PSAPIDBOBJ   pObj;
     PLIST_ENTRY  Entry;
     PSAPIDBENTRY Item;
 
     bResult = FALSE;
 
-    if (
-        (lpDeviceName == NULL) ||
-        (Buffer == NULL) ||
-        (ccBuffer == 0) ||
-        (Snapshot == NULL)
-        )
-    {
+    if ((ccBuffer < MAX_PATH) || (Buffer == NULL)) {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
         return bResult;
     }
 
-    pObj = Snapshot;
-
-    EnterCriticalSection(&pObj->objCS);
-
-    //CurrentObjectPath + \\ + lpDeviceName + \0
-    Length = (3 + _strlen(lpDeviceName) + _strlen(CurrentObjectPath)) * sizeof(WCHAR);
-    lpFullDeviceName = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, Length);
+    //
+    // Build full device path.
+    //
+    Length = (4 + _strlen(lpDeviceName) + _strlen(g_WinObj.CurrentObjectPath)) * sizeof(WCHAR);
+    lpFullDeviceName = (LPWSTR)supHeapAlloc(Length);
     if (lpFullDeviceName != NULL) {
 
         // create full path device name for comparison
-        _strcpy(lpFullDeviceName, CurrentObjectPath);
-        bIsRoot = (_strcmpi(CurrentObjectPath, L"\\") == 0);
+        _strcpy(lpFullDeviceName, g_WinObj.CurrentObjectPath);
+        bIsRoot = (_strcmpi(g_WinObj.CurrentObjectPath, L"\\") == 0);
         if (bIsRoot == FALSE) {
             _strcat(lpFullDeviceName, L"\\");
         }
         _strcat(lpFullDeviceName, lpDeviceName);
 
-        // enumerate devices
-        Entry = pObj->sapiDBHead.Flink;
-        while (Entry && Entry != &pObj->sapiDBHead) {
+        RtlEnterCriticalSection(&g_WinObj.Lock);
+
+        //
+        // Enumerate devices.
+        //
+        Entry = g_sapiDB.ListHead.Flink;
+        while (Entry && Entry != &g_sapiDB.ListHead) {
+
             Item = CONTAINING_RECORD(Entry, SAPIDBENTRY, ListEntry);
-            if (Item != NULL) {
-                if (Item->lpDeviceName != NULL) {
-                    if (_strcmpi(lpFullDeviceName, Item->lpDeviceName) == 0) {
-                        if (Item->lpDeviceDesc != NULL) {
-                            _strncpy(Buffer, ccBuffer, Item->lpDeviceDesc, _strlen(Item->lpDeviceDesc));
-                        }
-                        bResult = TRUE;
-                        break;
+            if (Item->lpDeviceName != NULL) {
+                if (_strcmpi(lpFullDeviceName, Item->lpDeviceName) == 0) {
+                    if (Item->lpDeviceDesc != NULL) {
+
+                        _strncpy(
+                            Buffer,
+                            ccBuffer,
+                            Item->lpDeviceDesc,
+                            _strlen(Item->lpDeviceDesc));
+
                     }
+                    bResult = TRUE;
+                    break;
                 }
             }
+
             Entry = Entry->Flink;
         }
-        HeapFree(GetProcessHeap(), 0, lpFullDeviceName);
-    }
 
-    LeaveCriticalSection(&pObj->objCS);
+        RtlLeaveCriticalSection(&g_WinObj.Lock);
+
+        supHeapFree(lpFullDeviceName);
+    }
     return bResult;
 }
 
@@ -1957,18 +2344,19 @@ BOOL supQueryDeviceDescription(
 *
 * Query driver description from SCM dump or from file version info
 *
+* Buffer should be at least MAX_PATH length in chars.
+*
 */
 BOOL supQueryDriverDescription(
-    _In_	LPWSTR lpDriverName,
-    _In_	PVOID scmSnapshot,
-    _In_	SIZE_T scmNumberOfEntries,
-    _Inout_	LPWSTR Buffer,
-    _In_	DWORD ccBuffer //size of buffer in chars
+    _In_ LPWSTR lpDriverName,
+    _Inout_ LPWSTR Buffer,
+    _In_ DWORD ccBuffer //size of buffer in chars
 )
 {
     BOOL    bResult, cond = FALSE;
     LPWSTR  lpServiceName = NULL;
     LPWSTR  lpDisplayName = NULL;
+    LPWSTR  lpRegKey = NULL;
     SIZE_T  i, sz;
 
     PVOID   vinfo = NULL;
@@ -1976,47 +2364,44 @@ BOOL supQueryDriverDescription(
     LRESULT lRet;
     HKEY    hKey = NULL;
 
-    WCHAR   szBuffer[MAX_PATH * 2];
+    WCHAR   szBuffer[MAX_PATH + 1];
     WCHAR   szImagePath[MAX_PATH + 1];
 
     LPTRANSLATE	                  lpTranslate = NULL;
     LPENUM_SERVICE_STATUS_PROCESS pInfo = NULL;
 
-
     bResult = FALSE;
-    if (
-        (lpDriverName == NULL) ||
-        (Buffer == NULL) ||
-        (ccBuffer == 0)
-        )
-    {
+
+    if ((ccBuffer < MAX_PATH) || (Buffer == NULL)) {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
         return bResult;
     }
 
-    // first attempt - look in SCM database
-    if (scmSnapshot != NULL) {
-        pInfo = (LPENUM_SERVICE_STATUS_PROCESS)scmSnapshot;
-        for (i = 0; i < scmNumberOfEntries; i++) {
+    //
+    // First attempt - look in SCM database.
+    //
+
+    RtlEnterCriticalSection(&g_WinObj.Lock);
+
+    if (g_scmDB.Entries != NULL) {
+        pInfo = (LPENUM_SERVICE_STATUS_PROCESS)g_scmDB.Entries;
+        for (i = 0; i < g_scmDB.NumberOfEntries; i++) {
 
             lpServiceName = pInfo[i].lpServiceName;
-            if (lpServiceName == NULL) {
+            if (lpServiceName == NULL)
                 continue;
-            }
 
             // not our driver - skip
-            if (_strcmpi(lpServiceName, lpDriverName) != 0) {
+            if (_strcmpi(lpServiceName, lpDriverName) != 0)
                 continue;
-            }
 
             lpDisplayName = pInfo[i].lpDisplayName;
-            if (lpDisplayName == NULL) {
+            if (lpDisplayName == NULL)
                 continue;
-            }
 
             // driver has the same name as service - skip, there is no description available
-            if (_strcmpi(lpDisplayName, lpDriverName) == 0) {
+            if (_strcmpi(lpDisplayName, lpDriverName) == 0)
                 continue;
-            }
 
             sz = _strlen(lpDisplayName);
             _strncpy(Buffer, ccBuffer, lpDisplayName, sz);
@@ -2025,19 +2410,30 @@ BOOL supQueryDriverDescription(
         }
     }
 
+    RtlLeaveCriticalSection(&g_WinObj.Lock);
+
     // second attempt - query through registry and fs
     if (bResult == FALSE) {
 
         do {
+            sz = _strlen(lpDriverName);
+            if (sz == 0)
+                break;
 
-            RtlSecureZeroMemory(szBuffer, sizeof(szBuffer));
-            wsprintfW(szBuffer, REGISTRYSERVICESKEY, lpDriverName);
+            sz += supServicesRegPathSize;
+            sz = (1 + sz) * sizeof(WCHAR);
+
+            lpRegKey = (LPWSTR)supHeapAlloc(sz);
+            if (lpRegKey == NULL)
+                break;
+
+            _strcpy(lpRegKey, supServicesRegPath);
+            _strcat(lpRegKey, lpDriverName);
 
             hKey = NULL;
-            lRet = RegOpenKeyEx(HKEY_LOCAL_MACHINE, szBuffer, 0, KEY_QUERY_VALUE, &hKey);
-            if (ERROR_SUCCESS != lRet) {
+            lRet = RegOpenKeyEx(HKEY_LOCAL_MACHINE, lpRegKey, 0, KEY_QUERY_VALUE, &hKey);
+            if (ERROR_SUCCESS != lRet)
                 break;
-            }
 
             RtlSecureZeroMemory(szImagePath, sizeof(szImagePath));
             dwSize = sizeof(szImagePath) - sizeof(UNICODE_NULL);
@@ -2048,29 +2444,25 @@ BOOL supQueryDriverDescription(
 
                 dwHandle = 0;
                 dwSize = GetFileVersionInfoSize(szImagePath, &dwHandle);
-                if (dwSize == 0) {
+                if (dwSize == 0)
                     break;
-                }
 
                 // allocate memory for version_info structure
-                vinfo = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwSize);
-                if (vinfo == NULL) {
+                vinfo = supHeapAlloc(dwSize);
+                if (vinfo == NULL)
                     break;
-                }
 
                 // query it from file
-                if (!GetFileVersionInfo(szImagePath, 0, dwSize, vinfo)) {
+                if (!GetFileVersionInfo(szImagePath, 0, dwSize, vinfo))
                     break;
-                }
 
                 // query codepage and language id info
                 dwSize = 0;
-                if (!VerQueryValue(vinfo, VERSION_TRANSLATION, &lpTranslate, (PUINT)&dwSize)) {
+                if (!VerQueryValue(vinfo, VERSION_TRANSLATION, (LPVOID*)&lpTranslate, (PUINT)&dwSize))
                     break;
-                }
-                if (dwSize == 0) {
+
+                if (dwSize == 0)
                     break;
-                }
 
                 // query filedescription from file with given codepage & language id
                 RtlSecureZeroMemory(szBuffer, sizeof(szBuffer));
@@ -2080,7 +2472,7 @@ BOOL supQueryDriverDescription(
                 // finally query pointer to version_info filedescription block data
                 lpDisplayName = NULL;
                 dwSize = 0;
-                bResult = VerQueryValue(vinfo, szBuffer, &lpDisplayName, (PUINT)&dwSize);
+                bResult = VerQueryValue(vinfo, szBuffer, (LPVOID*)&lpDisplayName, (PUINT)&dwSize);
                 if (bResult) {
                     _strncpy(Buffer, ccBuffer, lpDisplayName, dwSize);
                 }
@@ -2090,7 +2482,10 @@ BOOL supQueryDriverDescription(
         } while (cond);
 
         if (vinfo) {
-            HeapFree(GetProcessHeap(), 0, vinfo);
+            supHeapFree(vinfo);
+        }
+        if (lpRegKey) {
+            supHeapFree(lpRegKey);
         }
     }
     return bResult;
@@ -2103,12 +2498,14 @@ BOOL supQueryDriverDescription(
 *
 * Query section object type File + Image description from version info block
 *
+* Buffer should be at least MAX_PATH length in chars.
+*
 */
 BOOL supQuerySectionFileInfo(
-    _In_opt_	HANDLE hRootDirectory,
-    _In_		PUNICODE_STRING ObjectName,
-    _Inout_		LPWSTR Buffer,
-    _In_		DWORD ccBuffer //size of buffer in chars
+    _In_opt_ HANDLE hRootDirectory,
+    _In_ PUNICODE_STRING ObjectName,
+    _Inout_ LPWSTR Buffer,
+    _In_ DWORD ccBuffer //size of buffer in chars
 )
 {
     BOOL                        bResult, cond = FALSE;
@@ -2122,15 +2519,12 @@ BOOL supQuerySectionFileInfo(
     OBJECT_ATTRIBUTES           Obja;
     SECTION_BASIC_INFORMATION   sbi;
     SECTION_IMAGE_INFORMATION   sii;
-    WCHAR                       szQueryBlock[MAX_PATH];
+    WCHAR                       szQueryBlock[MAX_PATH + 1];
 
     bResult = FALSE;
-    if (
-        (ObjectName == NULL) ||
-        (Buffer == NULL) ||
-        (ccBuffer == 0)
-        )
-    {
+
+    if ((ccBuffer < MAX_PATH) || (Buffer == NULL)) {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
         return bResult;
     }
 
@@ -2175,14 +2569,14 @@ BOOL supQuerySectionFileInfo(
         // paranoid
         if (lpszKnownDlls == NULL) {
             RtlSecureZeroMemory(szQueryBlock, sizeof(szQueryBlock));
-            GetSystemDirectory(szQueryBlock, MAX_PATH);
+            _strcpy(szQueryBlock, g_WinObj.szSystemDirectory);
             lpszKnownDlls = szQueryBlock;
         }
 
         // allocate memory buffer to store full filename
         // KnownDlls + \\ + Object->Name + \0 
         cLength = (2 + _strlen(lpszKnownDlls) + _strlen(ObjectName->Buffer)) * sizeof(WCHAR);
-        lpszFileName = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, cLength);
+        lpszFileName = (LPWSTR)supHeapAlloc(cLength);
         if (lpszFileName == NULL)
             break;
 
@@ -2197,7 +2591,7 @@ BOOL supQuerySectionFileInfo(
             break;
 
         // allocate memory for version_info structure
-        vinfo = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwSize);
+        vinfo = supHeapAlloc(dwSize);
         if (vinfo == NULL)
             break;
 
@@ -2206,7 +2600,7 @@ BOOL supQuerySectionFileInfo(
             break;
 
         // query codepage and language id info
-        if (!VerQueryValue(vinfo, VERSION_TRANSLATION, &lpTranslate, (PUINT)&dwInfoSize))
+        if (!VerQueryValue(vinfo, VERSION_TRANSLATION, (LPVOID*)&lpTranslate, (PUINT)&dwInfoSize))
             break;
         if (dwInfoSize == 0)
             break;
@@ -2219,7 +2613,7 @@ BOOL supQuerySectionFileInfo(
         // finally query pointer to version_info filedescription block data
         pcValue = NULL;
         dwInfoSize = 0;
-        bResult = VerQueryValue(vinfo, szQueryBlock, &pcValue, (PUINT)&dwInfoSize);
+        bResult = VerQueryValue(vinfo, szQueryBlock, (LPVOID*)&pcValue, (PUINT)&dwInfoSize);
         if (bResult) {
             _strncpy(Buffer, ccBuffer, pcValue, dwInfoSize);
         }
@@ -2227,8 +2621,8 @@ BOOL supQuerySectionFileInfo(
     } while (cond);
 
     if (hSection) NtClose(hSection);
-    if (vinfo) HeapFree(GetProcessHeap(), 0, vinfo);
-    if (lpszFileName) HeapFree(GetProcessHeap(), 0, lpszFileName);
+    if (vinfo) supHeapFree(vinfo);
+    if (lpszFileName) supHeapFree(lpszFileName);
     return bResult;
 }
 
@@ -2244,19 +2638,20 @@ HANDLE supOpenDirectory(
     _In_ LPWSTR lpDirectory
 )
 {
-    HANDLE            hDirectory;
+    HANDLE            hDirectory = NULL;
     UNICODE_STRING    ustr;
     OBJECT_ATTRIBUTES obja;
 
-    if (lpDirectory == NULL) {
-        return NULL;
-    }
-    RtlSecureZeroMemory(&ustr, sizeof(ustr));
     RtlInitUnicodeString(&ustr, lpDirectory);
     InitializeObjectAttributes(&obja, &ustr, OBJ_CASE_INSENSITIVE, NULL, NULL);
 
-    hDirectory = NULL;
-    NtOpenDirectoryObject(&hDirectory, DIRECTORY_QUERY, &obja);
+    if (!NT_SUCCESS(NtOpenDirectoryObject(
+        &hDirectory,
+        DIRECTORY_QUERY,
+        &obja)))
+    {
+        return NULL;
+    }
 
     return hDirectory;
 }
@@ -2307,7 +2702,7 @@ HANDLE supOpenDirectoryForObject(
         //  e.g. lpDirectory = \ObjectTypes, lpObjectName = ObjectTypes then lpDirectory = \ 
         //
         ldirSz = rdirLen * sizeof(WCHAR) + sizeof(UNICODE_NULL);
-        LookupDirName = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ldirSz);
+        LookupDirName = (LPWSTR)supHeapAlloc(ldirSz);
         if (LookupDirName == NULL)
             return NULL;
 
@@ -2324,7 +2719,7 @@ HANDLE supOpenDirectoryForObject(
     hDirectory = supOpenDirectory(LookupDirName);
 
     if (needFree) {
-        HeapFree(GetProcessHeap(), 0, LookupDirName);
+        supHeapFree(LookupDirName);
     }
 
     return hDirectory;
@@ -2346,9 +2741,9 @@ BOOL supSaveDialogExecute(
 {
     OPENFILENAME tag1;
 
-    RtlSecureZeroMemory(&tag1, sizeof(OPENFILENAMEW));
+    RtlSecureZeroMemory(&tag1, sizeof(OPENFILENAME));
 
-    tag1.lStructSize = sizeof(OPENFILENAMEW);
+    tag1.lStructSize = sizeof(OPENFILENAME);
     tag1.hwndOwner = OwnerWindow;
     tag1.lpstrFilter = lpDialogFilter;
     tag1.lpstrFile = SaveFileName;
@@ -2356,7 +2751,7 @@ BOOL supSaveDialogExecute(
     tag1.lpstrInitialDir = NULL;
     tag1.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
 
-    return GetSaveFileNameW(&tag1);
+    return GetSaveFileName(&tag1);
 }
 
 /*
@@ -2412,7 +2807,7 @@ SIZE_T supWriteBufferToFile(
 
         pPosition = NULL;
 
-        if (Append != FALSE) {
+        if (Append) {
             Position.LowPart = FILE_WRITE_TO_END_OF_FILE;
             Position.HighPart = -1;
             pPosition = &Position;
@@ -2479,7 +2874,7 @@ HWND supCreateSzGripWindow(
     hwnd = CreateWindowEx(0, WC_SCROLLBAR, NULL,
         WS_CHILD | WS_VISIBLE | SBS_SIZEGRIP | WS_CLIPSIBLINGS,
         clientRect.left, clientRect.top,
-        GRIPPER_SIZE, GRIPPER_SIZE, hwndOwner, NULL, g_hInstance, NULL);
+        GRIPPER_SIZE, GRIPPER_SIZE, hwndOwner, NULL, g_WinObj.hInstance, NULL);
 
     return hwnd;
 }
@@ -2519,15 +2914,19 @@ BOOL supIsProcess32bit(
 )
 {
     NTSTATUS                           status;
+    ULONG                              returnLength;
     PROCESS_EXTENDED_BASIC_INFORMATION pebi;
-
-    if (hProcess == NULL) {
-        return FALSE;
-    }
 
     RtlSecureZeroMemory(&pebi, sizeof(pebi));
     pebi.Size = sizeof(PROCESS_EXTENDED_BASIC_INFORMATION);
-    status = NtQueryInformationProcess(hProcess, ProcessBasicInformation, &pebi, sizeof(pebi), NULL);
+
+    status = NtQueryInformationProcess(
+        hProcess,
+        ProcessBasicInformation,
+        &pebi,
+        sizeof(pebi),
+        &returnLength);
+
     if (NT_SUCCESS(status)) {
         return (pebi.IsWow64Process == 1);
     }
@@ -2550,7 +2949,12 @@ ULONG_PTR supQuerySystemRangeStart(
     ULONG_PTR SystemRangeStart = 0;
     ULONG     memIO = 0;
 
-    status = NtQuerySystemInformation(SystemRangeStartInformation, (PVOID)&SystemRangeStart, sizeof(ULONG_PTR), &memIO);
+    status = NtQuerySystemInformation(
+        SystemRangeStartInformation,
+        (PVOID)&SystemRangeStart,
+        sizeof(ULONG_PTR),
+        &memIO);
+
     if (!NT_SUCCESS(status)) {
         SetLastError(RtlNtStatusToDosError(status));
     }
@@ -2558,14 +2962,14 @@ ULONG_PTR supQuerySystemRangeStart(
 }
 
 /*
-* supConvertFileName
+* supxConvertFileName
 *
 * Purpose:
 *
 * Translate Nt path name to Dos path name.
 *
 */
-BOOL supConvertFileName(
+BOOL supxConvertFileName(
     _In_ LPWSTR NtFileName,
     _In_ LPWSTR DosFileName,
     _In_ SIZE_T ccDosFileName
@@ -2573,7 +2977,7 @@ BOOL supConvertFileName(
 {
     BOOL    bSuccess = FALSE, bFound = FALSE;
     WCHAR   szDrive[3];
-    WCHAR   szName[MAX_PATH]; //for the device partition name
+    WCHAR   szName[MAX_PATH + 1]; //for the device partition name
     WCHAR   szTemp[DBUFFER_SIZE]; //for the disk array
     UINT    uNameLen = 0;
     WCHAR  *p = szTemp;
@@ -2617,6 +3021,8 @@ BOOL supConvertFileName(
 *
 * Query filename by handle.
 *
+* Input buffer must be at least MAX_PATH length.
+*
 */
 BOOL supGetWin32FileName(
     _In_ LPWSTR FileName,
@@ -2633,12 +3039,13 @@ BOOL supGetWin32FileName(
     ULONG               memIO;
     BYTE               *Buffer = NULL;
 
+    if ((Win32FileName == NULL) || (ccWin32FileName < MAX_PATH)) {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+
     do {
 
-        if (ccWin32FileName < MAX_PATH)
-            break;
-
-        RtlSecureZeroMemory(&NtFileName, sizeof(NtFileName));
         RtlInitUnicodeString(&NtFileName, FileName);
         InitializeObjectAttributes(&obja, &NtFileName, OBJ_CASE_INSENSITIVE, 0, NULL);
 
@@ -2654,7 +3061,7 @@ BOOL supGetWin32FileName(
         if (status != STATUS_INFO_LENGTH_MISMATCH)
             break;
 
-        Buffer = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, memIO);
+        Buffer = (BYTE*)supHeapAlloc(memIO);
         if (Buffer == NULL)
             break;
 
@@ -2662,7 +3069,7 @@ BOOL supGetWin32FileName(
         if (!NT_SUCCESS(status))
             break;
 
-        if (!supConvertFileName(((PUNICODE_STRING)Buffer)->Buffer, Win32FileName, ccWin32FileName))
+        if (!supxConvertFileName(((PUNICODE_STRING)Buffer)->Buffer, Win32FileName, ccWin32FileName))
             break;
 
         bResult = TRUE;
@@ -2673,7 +3080,7 @@ BOOL supGetWin32FileName(
         NtClose(hFile);
 
     if (Buffer != NULL)
-        HeapFree(GetProcessHeap(), 0, Buffer);
+        supHeapFree(Buffer);
 
     return bResult;
 }
@@ -2690,7 +3097,7 @@ BOOL supIsWine(
     VOID
 )
 {
-    HANDLE hNtdll;
+    HMODULE hNtdll;
     FARPROC  WineVersion = NULL;
 
     hNtdll = GetModuleHandle(TEXT("ntdll.dll"));
@@ -2702,4 +3109,1229 @@ BOOL supIsWine(
     }
 
     return FALSE;
+}
+
+/*
+* supQuerySecureBootState
+*
+* Purpose:
+*
+* Query Firmware type and SecureBoot state if firmware is EFI.
+*
+*/
+BOOL supQuerySecureBootState(
+    _In_ PBOOLEAN pbSecureBoot
+)
+{
+    BOOL    bResult = FALSE;
+    BOOLEAN bSecureBoot = FALSE;
+    HKEY    hKey;
+    DWORD   dwState, dwSize, returnLength;
+    LSTATUS lRet;
+
+    //
+    // First attempt, query firmware environment variable, will not work if not fulladmin.
+    //
+    if (supEnablePrivilege(SE_SYSTEM_ENVIRONMENT_PRIVILEGE, TRUE)) {
+
+        bSecureBoot = FALSE;
+
+        returnLength = GetFirmwareEnvironmentVariable(
+            L"SecureBoot",
+            L"{8be4df61-93ca-11d2-aa0d-00e098032b8c}",
+            &bSecureBoot,
+            sizeof(BOOLEAN));
+
+        supEnablePrivilege(SE_SYSTEM_ENVIRONMENT_PRIVILEGE, FALSE);
+        if (returnLength != 0) {
+            if (pbSecureBoot) {
+                *pbSecureBoot = bSecureBoot;
+            }
+            bResult = TRUE;
+        }
+    }
+
+    if (bResult) {
+        return bResult;
+    }
+
+    //
+    // Second attempt, query state from registry.
+    //
+    hKey = NULL;
+    lRet = RegOpenKeyEx(HKEY_LOCAL_MACHINE, T_SECUREBOOTSTATEKEY, 0, KEY_QUERY_VALUE, &hKey);
+    if (lRet == ERROR_SUCCESS) {
+        dwState = 0;
+        dwSize = sizeof(DWORD);
+        lRet = RegQueryValueEx(hKey, T_SECUREBOOTSTATEVALUE, NULL, NULL, (LPBYTE)&dwState, &dwSize);
+        if (lRet == ERROR_SUCCESS) {
+
+            if (pbSecureBoot) {
+                *pbSecureBoot = (dwState == 1);
+            }
+            bResult = TRUE;
+        }
+        RegCloseKey(hKey);
+    }
+
+    if (bResult) {
+        return bResult;
+    }
+
+    //
+    // Third attempt, query state from user shared data.
+    //
+    dwState = USER_SHARED_DATA->DbgSecureBootEnabled;
+    if (pbSecureBoot) {
+        *pbSecureBoot = (dwState == 1);
+    }
+    bResult = TRUE;
+
+    return bResult;
+}
+
+/*
+* supxGetWindowStationName
+*
+* Purpose:
+*
+* Build current windows station object path based on SessionId value from PEB.
+*
+*/
+BOOLEAN supxGetWindowStationName(
+    _Out_ UNICODE_STRING *pusWinstaName
+)
+{
+    LPWSTR WindowStationsDir = L"\\Windows\\WindowStations";
+    LPWSTR SourceString;
+    ULONG SessionId = NtCurrentPeb()->SessionId;
+
+    WCHAR szWinsta[MAX_PATH];
+
+    if (SessionId) {
+        _strcpy(szWinsta, L"\\Sessions\\");
+        ultostr(SessionId, _strend(szWinsta));
+        _strcat(szWinsta, WindowStationsDir);
+        SourceString = szWinsta;
+    }
+    else {
+        SourceString = WindowStationsDir;
+    }
+    return RtlCreateUnicodeString(pusWinstaName, SourceString);
+}
+
+/*
+* supOpenWindowStationFromContext
+*
+* Purpose:
+*
+* Open Window station with hardcoded object path check.
+*
+*/
+HWINSTA supOpenWindowStationFromContext(
+    _In_ PROP_OBJECT_INFO *Context,
+    _In_ BOOL fInherit,
+    _In_ ACCESS_MASK dwDesiredAccess)
+{
+    HWINSTA hObject = NULL;
+    UNICODE_STRING CurrentWinstaDir;
+    UNICODE_STRING WinstaDir;
+
+    DWORD LastError = ERROR_SUCCESS;
+
+    if (supxGetWindowStationName(&CurrentWinstaDir)) {
+        RtlInitUnicodeString(&WinstaDir, Context->lpCurrentObjectPath);
+        if (RtlEqualUnicodeString(&WinstaDir, &CurrentWinstaDir, TRUE)) {
+            hObject = OpenWindowStation(Context->lpObjectName, fInherit, dwDesiredAccess);
+            LastError = GetLastError();
+        }
+        RtlFreeUnicodeString(&CurrentWinstaDir);
+    }
+
+    SetLastError(LastError);
+    return hObject;
+}
+
+/*
+* supOpenWindowStationFromContextEx
+*
+* Purpose:
+*
+* Open Window station bypass session check.
+*
+*/
+HWINSTA supOpenWindowStationFromContextEx(
+    _In_ PROP_OBJECT_INFO *Context,
+    _In_ BOOL fInherit,
+    _In_ ACCESS_MASK dwDesiredAccess)
+{
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    HWINSTA hObject = NULL;
+    HANDLE hRootDirectory = NULL;
+    UNICODE_STRING CurrentWinstaDir;
+    UNICODE_STRING WinstaDir;
+    UNICODE_STRING WinstaName;
+    OBJECT_ATTRIBUTES obja;
+
+    if (supxGetWindowStationName(&CurrentWinstaDir)) {
+        
+        //
+        // Same session, open as usual.
+        //
+        RtlInitUnicodeString(&WinstaDir, Context->lpCurrentObjectPath);
+        if (RtlEqualUnicodeString(&WinstaDir, &CurrentWinstaDir, TRUE)) {
+            hObject = OpenWindowStation(Context->lpObjectName, fInherit, dwDesiredAccess);
+            if (hObject)
+                Status = STATUS_SUCCESS;
+        }
+        else {
+            
+            //
+            // Different session, use NtUserOpenWindowStation (doesn't work in Windows 10).
+            //
+            InitializeObjectAttributes(&obja, &WinstaDir, OBJ_CASE_INSENSITIVE, NULL, NULL);
+            Status = NtOpenDirectoryObject(&hRootDirectory,
+                DIRECTORY_TRAVERSE,
+                &obja);
+            
+            if (NT_SUCCESS(Status)) {
+                
+                RtlInitUnicodeString(&WinstaName, Context->lpObjectName);
+                InitializeObjectAttributes(&obja, &WinstaName, OBJ_CASE_INSENSITIVE, hRootDirectory, NULL);
+                
+                if (fInherit)
+                    obja.Attributes |= OBJ_INHERIT;
+                
+                hObject = g_ExtApiSet.NtUserOpenWindowStation(&obja, dwDesiredAccess);
+
+                Status = RtlGetLastNtStatus();
+                NtClose(hRootDirectory);
+            }
+        }
+        RtlFreeUnicodeString(&CurrentWinstaDir);
+    }
+    SetLastError(RtlNtStatusToDosErrorNoTeb(Status));
+    return hObject;
+}
+
+/*
+* supQueryObjectTrustLabel
+*
+* Purpose:
+*
+* Query object trust label protection origin and level.
+*
+* Note: hObject must be opened with READ_CONTROL.
+*
+*/
+BOOL supQueryObjectTrustLabel(
+    _In_ HANDLE hObject,
+    _Out_ PULONG ProtectionType,
+    _Out_ PULONG ProtectionLevel)
+{
+    BOOL                            bCond = FALSE, bResult = FALSE;
+    BOOLEAN                         saclPresent = FALSE, saclDefaulted = FALSE;
+    ULONG                           i, Length = 0, returnLength = 0;
+
+    NTSTATUS                        Status;
+
+    PSID                            aceSID;
+    PACL                            sacl = NULL;
+    PACE_HEADER                     aceHeader;
+    PSYSTEM_PROCESS_TRUST_LABEL_ACE ace;
+
+    ACL_SIZE_INFORMATION            aclSize;
+    PSECURITY_DESCRIPTOR            pSD = NULL;
+
+    *ProtectionType = 0;
+    *ProtectionLevel = 0;
+
+    do {
+
+        //
+        // Query Security Descriptor for given object.
+        //
+        Length = PAGE_SIZE;
+        pSD = (PSECURITY_DESCRIPTOR)supHeapAlloc((SIZE_T)Length);
+        if (pSD == NULL)
+            break;
+
+        Status = NtQuerySecurityObject(hObject,
+            PROCESS_TRUST_LABEL_SECURITY_INFORMATION,
+            pSD, Length, &returnLength);
+
+        if (Status == STATUS_BUFFER_TOO_SMALL) {
+            supHeapFree(pSD);
+
+            pSD = (PSECURITY_DESCRIPTOR)supHeapAlloc((SIZE_T)returnLength);
+            if (pSD == NULL)
+                break;
+
+            Status = NtQuerySecurityObject(hObject,
+                PROCESS_TRUST_LABEL_SECURITY_INFORMATION,
+                pSD, Length, &returnLength);
+        }
+
+        if (!NT_SUCCESS(Status))
+            break;
+
+        //
+        // Query SACL from SD.
+        //
+        if (!NT_SUCCESS(RtlGetSaclSecurityDescriptor(pSD,
+            &saclPresent,
+            &sacl,
+            &saclDefaulted))) break;
+
+        if (!sacl)
+            break;
+
+        //
+        // Query SACL size.
+        //
+        if (!NT_SUCCESS(RtlQueryInformationAcl(sacl,
+            &aclSize,
+            sizeof(aclSize),
+            AclSizeInformation))) break;
+
+        //
+        // Locate trust label ace.
+        //
+        for (i = 0; i < aclSize.AceCount; i++) {
+            if (NT_SUCCESS(RtlGetAce(sacl, i, (PVOID*)&aceHeader))) {
+                if (aceHeader->AceType == SYSTEM_PROCESS_TRUST_LABEL_ACE_TYPE) {
+                    ace = (SYSTEM_PROCESS_TRUST_LABEL_ACE*)aceHeader;
+                    aceSID = (PSID)(&ace->SidStart);
+                    *ProtectionType = *RtlSubAuthoritySid(aceSID, 0);
+                    *ProtectionLevel = *RtlSubAuthoritySid(aceSID, 1);
+                    bResult = TRUE;
+                    break;
+                }
+            }
+        }
+
+    } while (bCond);
+
+    if (pSD) supHeapFree(pSD);
+
+    return bResult;
+}
+
+/*
+* supQueryTokenUserSid
+*
+* Purpose:
+*
+* Return SID of given token.
+*
+* Use supHeapFree to free memory allocated for result.
+*
+*/
+PSID supQueryTokenUserSid(
+    _In_ HANDLE hProcessToken
+)
+{
+    PSID result = NULL;
+    PTOKEN_USER ptu;
+    NTSTATUS status;
+    ULONG LengthNeeded = 0;
+
+    status = NtQueryInformationToken(hProcessToken, TokenUser,
+        NULL, 0, &LengthNeeded);
+
+    if (status == STATUS_BUFFER_TOO_SMALL) {
+
+        ptu = (PTOKEN_USER)supHeapAlloc(LengthNeeded);
+
+        if (ptu) {
+
+            status = NtQueryInformationToken(hProcessToken, TokenUser,
+                ptu, LengthNeeded, &LengthNeeded);
+
+            if (NT_SUCCESS(status)) {
+                LengthNeeded = SECURITY_MAX_SID_SIZE;
+                result = supHeapAlloc(LengthNeeded);
+                if (result) {
+                    status = RtlCopySid(LengthNeeded, result, ptu->User.Sid);
+                }
+            }
+
+            supHeapFree(ptu);
+        }
+    }
+
+    return (NT_SUCCESS(status)) ? result : NULL;
+}
+
+/*
+* supQueryProcessSid
+*
+* Purpose:
+*
+* Return SID for the given process.
+*
+* Use supHeapFree to free memory allocated for result.
+*
+*/
+PSID supQueryProcessSid(
+    _In_ HANDLE hProcess
+)
+{
+    HANDLE hProcessToken = NULL;
+    PSID result = NULL;
+
+
+    if (NT_SUCCESS(NtOpenProcessToken(hProcess, TOKEN_QUERY, &hProcessToken))) {
+
+        result = supQueryTokenUserSid(hProcessToken);
+
+        NtClose(hProcessToken);
+    }
+
+    return result;
+}
+
+/*
+* supIsLocalSystem
+*
+* Purpose:
+*
+* pbResult will be set to TRUE if current account is run by system user, FALSE otherwise.
+*
+* Function return operation status code.
+*
+*/
+NTSTATUS supIsLocalSystem(
+    _In_ HANDLE hToken,
+    _Out_ PBOOL pbResult)
+{
+    BOOL                     bResult = FALSE;
+    NTSTATUS                 status = STATUS_UNSUCCESSFUL;
+    PSID                     SystemSid = NULL, TokenSid = NULL;
+    SID_IDENTIFIER_AUTHORITY NtAuth = SECURITY_NT_AUTHORITY;
+
+    TokenSid = supQueryTokenUserSid(hToken);
+    if (TokenSid == NULL)
+        return status;
+
+    status = RtlAllocateAndInitializeSid(
+        &NtAuth,
+        1,
+        SECURITY_LOCAL_SYSTEM_RID,
+        0, 0, 0, 0, 0, 0, 0,
+        &SystemSid);
+
+    if (NT_SUCCESS(status)) {
+        bResult = RtlEqualSid(TokenSid, SystemSid);
+        RtlFreeSid(SystemSid);
+    }
+
+    supHeapFree(TokenSid);
+
+    if (pbResult)
+        *pbResult = bResult;
+
+    return status;
+}
+
+/*
+* supxGetSystemToken
+*
+* Purpose:
+*
+* Find NT AUTHORITY\System process and duplicate it token.
+*
+*/
+HANDLE supxGetSystemToken(
+    PVOID ProcessList)
+{
+    BOOL bSystemToken = FALSE;
+    ULONG NextEntryDelta = 0;
+    HANDLE hObject = NULL;
+    HANDLE hToken = NULL;
+
+    OBJECT_ATTRIBUTES obja = RTL_INIT_OBJECT_ATTRIBUTES((PUNICODE_STRING)NULL, 0);
+
+    union {
+        PSYSTEM_PROCESSES_INFORMATION Processes;
+        PBYTE ListRef;
+    } List;
+
+    List.ListRef = (PBYTE)ProcessList;
+
+    do {
+
+        List.ListRef += NextEntryDelta;
+
+        if (List.Processes->ThreadCount &&
+            List.Processes->InheritedFromUniqueProcessId)
+        {
+            if (NT_SUCCESS(NtOpenProcess(
+                &hObject,
+                PROCESS_QUERY_INFORMATION,
+                &obja,
+                &List.Processes->Threads[0].ClientId)))
+            {
+
+                if (NT_SUCCESS(NtOpenProcessToken(
+                    hObject,
+                    TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_IMPERSONATE | TOKEN_QUERY,
+                    &hToken)))
+                {
+                    if (NT_SUCCESS(supIsLocalSystem(hToken, &bSystemToken))) {
+                        if (bSystemToken) {
+                            NtClose(hObject);
+                            return hToken;
+                        }
+                    }
+                    NtClose(hToken);
+                }
+
+                NtClose(hObject);
+            }
+        }
+
+        NextEntryDelta = List.Processes->NextEntryDelta;
+
+    } while (NextEntryDelta);
+
+
+    return NULL;
+}
+
+/*
+* supRunAsLocalSystem
+*
+* Purpose:
+*
+* Restart WinObjEx64 in local system account.
+*
+* Note: Elevated instance required.
+*
+*/
+BOOL supRunAsLocalSystem(
+    _In_ HWND hwndParent)
+{
+    BOOL bCond = FALSE, bSuccess = FALSE;
+    PVOID ProcessList;
+    ULONG SessionId = NtCurrentPeb()->SessionId, dummy;
+
+    HANDLE hSystemToken, hPrimaryToken = NULL, hImpersonationToken = NULL;
+
+    BOOLEAN bThreadImpersonated = FALSE;
+
+    PROCESS_INFORMATION pi;
+    STARTUPINFO si;
+
+    SECURITY_QUALITY_OF_SERVICE sqos;
+    OBJECT_ATTRIBUTES obja;
+    TOKEN_PRIVILEGES *TokenPrivileges;
+
+    WCHAR szApplication[MAX_PATH * 2];
+
+    //
+    // Remember our application name.
+    //
+    RtlSecureZeroMemory(szApplication, sizeof(szApplication));
+    GetModuleFileName(NULL, szApplication, MAX_PATH);
+
+    sqos.Length = sizeof(sqos);
+    sqos.ImpersonationLevel = SecurityImpersonation;
+    sqos.ContextTrackingMode = SECURITY_DYNAMIC_TRACKING;
+    sqos.EffectiveOnly = FALSE;
+    InitializeObjectAttributes(&obja, NULL, 0, NULL, NULL);
+    obja.SecurityQualityOfService = &sqos;
+
+    ProcessList = supGetSystemInfo(SystemProcessInformation);
+    if (ProcessList == NULL)
+        return FALSE;
+
+    supEnablePrivilege(SE_DEBUG_PRIVILEGE, TRUE);
+
+    //
+    // Get LocalSystem token.
+    //
+    hSystemToken = supxGetSystemToken(ProcessList);
+
+    supHeapFree(ProcessList);
+
+    do {
+
+        if (hSystemToken == NULL) {
+
+            MessageBox(
+                hwndParent,
+                TEXT("No suitable system token found. Make sure you are running as administrator"),
+                PROGRAM_NAME,
+                MB_ICONINFORMATION);
+
+            break;
+        }
+
+        //
+        // Duplicate as impersonation token.
+        //
+        if (!NT_SUCCESS(NtDuplicateToken(
+            hSystemToken,
+            TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY |
+            TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_PRIVILEGES,
+            &obja,
+            FALSE,
+            TokenImpersonation,
+            &hImpersonationToken)))
+        {
+            break;
+        }
+
+        //
+        // Duplicate as primary token.
+        //
+        if (!NT_SUCCESS(NtDuplicateToken(
+            hSystemToken,
+            TOKEN_ALL_ACCESS,
+            &obja,
+            FALSE,
+            TokenPrimary,
+            &hPrimaryToken)))
+        {
+            break;
+        }
+
+        //
+        // Impersonate system token.
+        //
+        if (!NT_SUCCESS(NtSetInformationThread(
+            NtCurrentThread(),
+            ThreadImpersonationToken,
+            &hImpersonationToken,
+            sizeof(HANDLE))))
+        {
+            break;
+        }
+
+        bThreadImpersonated = TRUE;
+
+        //
+        // Turn on AssignPrimaryToken privilege in impersonated token.
+        //
+        TokenPrivileges = (TOKEN_PRIVILEGES*)_alloca(sizeof(TOKEN_PRIVILEGES) +
+            (1 * sizeof(LUID_AND_ATTRIBUTES)));
+
+        TokenPrivileges->PrivilegeCount = 1;
+        TokenPrivileges->Privileges[0].Luid.LowPart = SE_ASSIGNPRIMARYTOKEN_PRIVILEGE;
+        TokenPrivileges->Privileges[0].Luid.HighPart = 0;
+        TokenPrivileges->Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+        if (!NT_SUCCESS(NtAdjustPrivilegesToken(
+            hImpersonationToken,
+            FALSE,
+            TokenPrivileges,
+            0,
+            NULL,
+            (PULONG)&dummy)))
+        {
+            break;
+        }
+
+        //
+        // Set session id to primary token.
+        //
+        if (!NT_SUCCESS(NtSetInformationToken(
+            hPrimaryToken,
+            TokenSessionId,
+            &SessionId,
+            sizeof(ULONG))))
+        {
+            break;
+        }
+
+        si.cb = sizeof(si);
+        GetStartupInfo(&si);
+
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_SHOWNORMAL;
+
+        //
+        // Run new instance with prepared primary token.
+        //
+        bSuccess = CreateProcessAsUser(
+            hPrimaryToken,
+            szApplication,
+            g_WinObj.EnableExperimentalFeatures ? GetCommandLine() : NULL,
+            NULL,
+            NULL,
+            FALSE,
+            CREATE_DEFAULT_ERROR_MODE,
+            NULL,
+            NULL,
+            &si,
+            &pi);
+
+        if (bSuccess) {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+
+    } while (bCond);
+
+    if (hImpersonationToken) {
+        NtClose(hImpersonationToken);
+    }
+
+    //
+    // Revert To Self.
+    //
+    if (bThreadImpersonated) {
+        hImpersonationToken = NULL;
+        NtSetInformationThread(
+            NtCurrentThread(),
+            ThreadImpersonationToken,
+            (PVOID)&hImpersonationToken,
+            sizeof(HANDLE));
+    }
+
+    if (hPrimaryToken) NtClose(hPrimaryToken);
+    if (hSystemToken) NtClose(hSystemToken);
+
+    //
+    // Quit.
+    //
+    if (bSuccess)
+        PostQuitMessage(0);
+
+    return bSuccess;
+}
+
+/*
+* supGetCurrentProcessToken
+*
+* Purpose:
+*
+* Return current process token value with TOKEN_QUERY access right.
+*
+*/
+HANDLE supGetCurrentProcessToken(
+    VOID)
+{
+    HANDLE hToken = NULL;
+
+    if (NT_SUCCESS(NtOpenProcessToken(
+        NtCurrentProcess(),
+        TOKEN_QUERY,
+        &hToken)))
+    {
+        return hToken;
+    }
+    return NULL;
+}
+
+/*
+* supLookupImageSectionByName
+*
+* Purpose:
+*
+* Lookup section pointer and size for section name.
+*
+*/
+PVOID supLookupImageSectionByName(
+    _In_ CHAR* SectionName,
+    _In_ ULONG SectionNameLength,
+    _In_ PVOID DllBase,
+    _Out_ PULONG SectionSize
+)
+{
+    BOOLEAN bFound = FALSE;
+    ULONG i;
+    PVOID Section;
+    IMAGE_NT_HEADERS *NtHeaders = RtlImageNtHeader(DllBase);
+    IMAGE_SECTION_HEADER *SectionTableEntry;
+
+    if (SectionSize)
+        *SectionSize = 0;
+
+    SectionTableEntry = (PIMAGE_SECTION_HEADER)((PCHAR)NtHeaders +
+        sizeof(ULONG) +
+        sizeof(IMAGE_FILE_HEADER) +
+        NtHeaders->FileHeader.SizeOfOptionalHeader);
+
+    //
+    // Locate section.
+    //
+    i = NtHeaders->FileHeader.NumberOfSections;
+    while (i > 0) {
+
+        if (_strncmp_a(
+            (CHAR*)SectionTableEntry->Name,
+            SectionName,
+            SectionNameLength) == 0)
+        {
+            bFound = TRUE;
+            break;
+        }
+
+        i -= 1;
+        SectionTableEntry += 1;
+    }
+
+    //
+    // Section not found, abort scan.
+    //
+    if (!bFound)
+        return NULL;
+
+    Section = (PVOID)((ULONG_PTR)DllBase + SectionTableEntry->VirtualAddress);
+    if (SectionSize)
+        *SectionSize = SectionTableEntry->Misc.VirtualSize;
+
+    return Section;
+}
+
+/*
+* supFindPattern
+*
+* Purpose:
+*
+* Lookup pattern in buffer.
+*
+*/
+PVOID supFindPattern(
+    _In_ CONST PBYTE Buffer,
+    _In_ SIZE_T BufferSize,
+    _In_ CONST PBYTE Pattern,
+    _In_ SIZE_T PatternSize
+)
+{
+    PBYTE	p = Buffer;
+
+    if (PatternSize == 0)
+        return NULL;
+    if (BufferSize < PatternSize)
+        return NULL;
+    BufferSize -= PatternSize;
+
+    do {
+        p = (PBYTE)memchr(p, Pattern[0], BufferSize - (p - Buffer));
+        if (p == NULL)
+            break;
+
+        if (memcmp(p, Pattern, PatternSize) == 0)
+            return p;
+
+        p++;
+    } while (BufferSize - (p - Buffer) > 0); //-V555
+
+    return NULL;
+}
+
+/*
+* supUpdateLvColumnHeaderImage
+*
+* Purpose:
+*
+* Set new image for selected column and reset for all the rest.
+*
+*/
+VOID supUpdateLvColumnHeaderImage(
+    _In_ HWND ListView,
+    _In_ INT NumberOfColumns,
+    _In_ INT UpdateColumn,
+    _In_ INT ImageIndex
+)
+{
+    INT i;
+    LVCOLUMN col;
+
+    RtlSecureZeroMemory(&col, sizeof(col));
+    col.mask = LVCF_IMAGE;
+
+    for (i = 0; i < NumberOfColumns; i++) {
+        if (i == UpdateColumn) {
+            col.iImage = ImageIndex;
+        }
+        else {
+            col.iImage = I_IMAGENONE;
+        }
+        ListView_SetColumn(ListView, i, &col);
+    }
+}
+
+/*
+* supGetMaxOfTwoU64FromHex
+*
+* Purpose:
+*
+* Returned value used in listview comparer functions.
+*
+*/
+INT supGetMaxOfTwoU64FromHex(
+    _In_ HWND ListView,
+    _In_ LPARAM lParam1,
+    _In_ LPARAM lParam2,
+    _In_ LPARAM lParamSort,
+    _In_ BOOL Inverse
+)
+{
+    INT       nResult;
+    LPWSTR    lpItem1 = NULL, lpItem2 = NULL;
+    ULONG_PTR ad1, ad2;
+    WCHAR     szText[MAX_TEXT_CONVERSION_ULONG64 + 1];
+
+    RtlSecureZeroMemory(&szText, sizeof(szText));
+
+    lpItem1 = supGetItemText2(
+        ListView,
+        (INT)lParam1,
+        (INT)lParamSort,
+        szText,
+        MAX_TEXT_CONVERSION_ULONG64);
+
+    ad1 = hextou64(&lpItem1[2]);
+
+    RtlSecureZeroMemory(&szText, sizeof(szText));
+
+    lpItem2 = supGetItemText2(
+        ListView,
+        (INT)lParam2,
+        (INT)lParamSort,
+        szText,
+        MAX_TEXT_CONVERSION_ULONG64);
+
+    ad2 = hextou64(&lpItem2[2]);
+
+    if (Inverse)
+        nResult = ad1 < ad2;
+    else
+        nResult = ad1 > ad2;
+
+    return nResult;
+}
+
+/*
+* supGetMaxOfTwoLongFromString
+*
+* Purpose:
+*
+* Returned value used in listview comparer functions.
+*
+*/
+INT supGetMaxOfTwoLongFromString(
+    _In_ HWND ListView,
+    _In_ LPARAM lParam1,
+    _In_ LPARAM lParam2,
+    _In_ LPARAM lParamSort,
+    _In_ BOOL Inverse
+)
+{
+    INT       nResult;
+    LPWSTR    lpItem1 = NULL, lpItem2 = NULL;
+    LONG_PTR  value1, value2;
+    WCHAR     szText[MAX_TEXT_CONVERSION_ULONG64 + 1];
+
+    RtlSecureZeroMemory(&szText, sizeof(szText));
+
+    lpItem1 = supGetItemText2(
+        ListView,
+        (INT)lParam1,
+        (INT)lParamSort,
+        szText,
+        MAX_TEXT_CONVERSION_ULONG64);
+
+    value1 = strtoi64(lpItem1);
+
+    RtlSecureZeroMemory(&szText, sizeof(szText));
+
+    lpItem2 = supGetItemText2(
+        ListView,
+        (INT)lParam2,
+        (INT)lParamSort,
+        szText,
+        MAX_TEXT_CONVERSION_ULONG64);
+
+    value2 = strtoi64(lpItem2);
+
+    if (Inverse)
+        nResult = value1 < value2;
+    else
+        nResult = value1 > value2;
+
+    return nResult;
+}
+
+/*
+* supGetMaxOfTwoULongFromString
+*
+* Purpose:
+*
+* Returned value used in listview comparer functions.
+*
+*/
+INT supGetMaxOfTwoULongFromString(
+    _In_ HWND ListView,
+    _In_ LPARAM lParam1,
+    _In_ LPARAM lParam2,
+    _In_ LPARAM lParamSort,
+    _In_ BOOL Inverse
+)
+{
+    INT       nResult;
+    LPWSTR    lpItem1 = NULL, lpItem2 = NULL;
+    ULONG_PTR value1, value2;
+    WCHAR     szText[MAX_TEXT_CONVERSION_ULONG64 + 1];
+
+    RtlSecureZeroMemory(&szText, sizeof(szText));
+
+    lpItem1 = supGetItemText2(
+        ListView,
+        (INT)lParam1,
+        (INT)lParamSort,
+        szText,
+        MAX_TEXT_CONVERSION_ULONG64);
+
+    value1 = strtou64(lpItem1);
+
+    RtlSecureZeroMemory(&szText, sizeof(szText));
+
+    lpItem2 = supGetItemText2(
+        ListView,
+        (INT)lParam2,
+        (INT)lParamSort,
+        szText,
+        MAX_TEXT_CONVERSION_ULONG64);
+
+    value2 = strtou64(lpItem2);
+
+    if (Inverse)
+        nResult = value1 < value2;
+    else
+        nResult = value1 > value2;
+
+    return nResult;
+}
+
+/*
+* supGetMaxCompareTwoFixedStrings
+*
+* Purpose:
+*
+* Returned value used in listview comparer functions.
+*
+*/
+INT supGetMaxCompareTwoFixedStrings(
+    _In_ HWND ListView,
+    _In_ LPARAM lParam1,
+    _In_ LPARAM lParam2,
+    _In_ LPARAM lParamSort,
+    _In_ BOOL Inverse
+)
+{
+    INT       nResult;
+    LPWSTR    lpItem1 = NULL, lpItem2 = NULL;
+    WCHAR     szString1[MAX_PATH + 1], szString2[MAX_PATH + 1];
+
+    szString1[0] = 0;
+
+    lpItem1 = supGetItemText2(
+        ListView,
+        (INT)lParam1,
+        (INT)lParamSort,
+        szString1,
+        MAX_PATH);
+
+    szString2[0] = 0;
+
+    lpItem2 = supGetItemText2(
+        ListView,
+        (INT)lParam2,
+        (INT)lParamSort,
+        szString2,
+        MAX_PATH);
+
+    if (Inverse)
+        nResult = _strcmpi(lpItem2, lpItem1);
+    else
+        nResult = _strcmpi(lpItem1, lpItem2);
+
+    return nResult;
+}
+
+/*
+* supOpenNamedObjectFromContext
+*
+* Purpose:
+*
+* Return handle (query rights) for the given named object.
+*
+*/
+HANDLE supOpenNamedObjectFromContext(
+    _In_ PROP_OBJECT_INFO *Context,
+    _In_ OBJECT_ATTRIBUTES *ObjectAttributes,
+    _In_ ACCESS_MASK DesiredAccess,
+    _Out_ NTSTATUS *Status
+)
+{
+    HANDLE hObject = NULL, hPrivateNamespace = NULL;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    IO_STATUS_BLOCK iost;
+    OBJECT_ATTRIBUTES objaNamespace;
+
+    if (Context->IsPrivateNamespaceObject) {
+
+        //
+        // Open private namespace.
+        //
+        InitializeObjectAttributes(&objaNamespace, NULL, OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+        status = NtOpenPrivateNamespace(
+            &hPrivateNamespace,
+            MAXIMUM_ALLOWED,
+            &objaNamespace,
+            Context->NamespaceInfo.BoundaryDescriptor);
+
+        if (!NT_SUCCESS(status)) {
+            *Status = status;
+            return NULL;
+        }
+
+        //
+        // Modify OBJECT_ATTRIBUTES RootDirectory.
+        //
+        ObjectAttributes->RootDirectory = hPrivateNamespace;
+    }
+
+    switch (Context->TypeIndex) {
+    case ObjectTypeDevice: //FILE_OBJECT
+        status = NtCreateFile(&hObject, DesiredAccess, ObjectAttributes, &iost, NULL, 0,
+            FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, 0, NULL, 0);//generic access rights
+        break;
+
+    case ObjectTypeMutant:
+        status = NtOpenMutant(&hObject, DesiredAccess, ObjectAttributes); //MUTANT_QUERY_STATE for query
+        break;
+
+    case ObjectTypeKey:
+        status = NtOpenKey(&hObject, DesiredAccess, ObjectAttributes); //KEY_QUERY_VALUE for query
+        break;
+
+    case ObjectTypeSemaphore:
+        status = NtOpenSemaphore(&hObject, DesiredAccess, ObjectAttributes); //SEMAPHORE_QUERY_STATE for query
+        break;
+
+    case ObjectTypeTimer:
+        status = NtOpenTimer(&hObject, DesiredAccess, ObjectAttributes); //TIMER_QUERY_STATE for query
+        break;
+
+    case ObjectTypeEvent:
+        status = NtOpenEvent(&hObject, DesiredAccess, ObjectAttributes); //EVENT_QUERY_STATE for query
+        break;
+
+    case ObjectTypeEventPair:
+        status = NtOpenEventPair(&hObject, DesiredAccess, ObjectAttributes); //generic access
+        break;
+
+    case ObjectTypeSymbolicLink:
+        status = NtOpenSymbolicLinkObject(&hObject, DesiredAccess, ObjectAttributes); //SYMBOLIC_LINK_QUERY for query
+        break;
+
+    case ObjectTypeIoCompletion:
+        status = NtOpenIoCompletion(&hObject, DesiredAccess, ObjectAttributes); //IO_COMPLETION_QUERY_STATE for query
+        break;
+
+    case ObjectTypeSection:
+        status = NtOpenSection(&hObject, DesiredAccess, ObjectAttributes); //SECTION_QUERY for query
+        break;
+
+    case ObjectTypeJob:
+        status = NtOpenJobObject(&hObject, DesiredAccess, ObjectAttributes); //JOB_OBJECT_QUERY for query
+        break;
+
+    case ObjectTypeMemoryPartition:
+        if (g_ExtApiSet.NtOpenPartition) {
+            status = g_ExtApiSet.NtOpenPartition(&hObject, DesiredAccess, ObjectAttributes); //MEMORY_PARTITION_QUERY_ACCESS for query 
+        }
+        else
+            status = STATUS_PROCEDURE_NOT_FOUND;
+        break;
+    default:
+        status = STATUS_OBJECTID_NOT_FOUND;
+        break;
+    }
+
+    *Status = status;
+
+    if (hPrivateNamespace) NtClose(hPrivateNamespace);
+
+    return hObject;
+}
+
+/*
+* supShowError
+*
+* Purpose:
+*
+* Display detailed last error to user.
+*
+*/
+VOID supShowLastError(
+    _In_ HWND hWnd,
+    _In_ LPWSTR Source,
+    _In_ DWORD LastError
+)
+{
+    LPWSTR lpMsgBuf = NULL;
+
+    if (FormatMessage(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+        NULL, LastError,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        (LPWSTR)&lpMsgBuf, 0, NULL))
+    {
+        MessageBox(hWnd, lpMsgBuf, Source, MB_TOPMOST | MB_ICONERROR);
+        LocalFree(lpMsgBuf);
+    }
+}
+
+/*
+* supCopyTreeListSubItemValue
+*
+* Purpose:
+*
+* Copy treelist value to the clipboard.
+*
+*/
+VOID supCopyTreeListSubItemValue(
+    _In_ HWND TreeList,
+    _In_ UINT ValueIndex
+)
+{
+    SIZE_T             cbText;
+    LPWSTR             lpText;
+    TL_SUBITEMS_FIXED *subitems;
+    TVITEMEX           itemex;
+    WCHAR              textbuf[MAX_PATH + 1];
+
+    __try {
+
+        RtlSecureZeroMemory(&itemex, sizeof(itemex));
+        RtlSecureZeroMemory(textbuf, sizeof(textbuf));
+        subitems = NULL;
+        itemex.mask = TVIF_TEXT;
+        itemex.hItem = TreeList_GetSelection(TreeList);
+        itemex.pszText = textbuf;
+        itemex.cchTextMax = MAX_PATH;
+
+        TreeList_GetTreeItem(TreeList, &itemex, &subitems);
+
+        if (subitems) {
+            if (ValueIndex < subitems->Count) {
+                lpText = subitems->Text[ValueIndex];
+                if (lpText) {
+                    cbText = _strlen(lpText) * sizeof(WCHAR);
+                    supClipboardCopy(lpText, cbText);
+                }
+            }
+        }
+    }
+    __except (exceptFilter(GetExceptionCode(), GetExceptionInformation())) {
+        return;
+    }
 }

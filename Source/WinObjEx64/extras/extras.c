@@ -1,12 +1,12 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2015 - 2017
+*  (C) COPYRIGHT AUTHORS, 2015 - 2018
 *
 *  TITLE:       EXTRAS.C
 *
-*  VERSION:     1.46
+*  VERSION:     1.70
 *
-*  DATE:        09 Mar 2017
+*  DATE:        30 Nov 2018
 *
 * THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
 * ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED
@@ -21,6 +21,8 @@
 #include "extrasSSDT.h"
 #include "extrasDrivers.h"
 #include "extrasIPC.h"
+#include "extrasPSList.h"
+#include "extrasCallbacks.h"
 
 /*
 * extrasSimpleListResize
@@ -72,8 +74,7 @@ VOID extrasDlgHandleNotify(
     _In_opt_ PVOID CustomParameter
 )
 {
-    INT      c, k;
-    LVCOLUMN col;
+    INT nImageIndex;
 
     if ((nhdr == NULL) || (Context == NULL) || (CompareFunc == NULL))
         return;
@@ -89,20 +90,18 @@ VOID extrasDlgHandleNotify(
         Context->lvColumnToSort = ((NMLISTVIEW *)nhdr)->iSubItem;
         ListView_SortItemsEx(Context->ListView, CompareFunc, Context->lvColumnToSort);
 
-        RtlSecureZeroMemory(&col, sizeof(col));
-        col.mask = LVCF_IMAGE;
-        col.iImage = -1;
-
-        for (c = 0; c < Context->lvColumnCount; c++)
-            ListView_SetColumn(Context->ListView, c, &col);
-
-        k = ImageList_GetImageCount(ListViewImages);
+        nImageIndex = ImageList_GetImageCount(g_ListViewImages);
         if (Context->bInverseSort)
-            col.iImage = k - 2;
+            nImageIndex -= 2; //sort down/up images are always at the end of g_ListViewImages
         else
-            col.iImage = k - 1;
+            nImageIndex -= 1;
 
-        ListView_SetColumn(Context->ListView, ((NMLISTVIEW *)nhdr)->iSubItem, &col);
+        supUpdateLvColumnHeaderImage(
+            Context->ListView,
+            Context->lvColumnCount,
+            Context->lvColumnToSort,
+            nImageIndex);
+
         break;
 
     default:
@@ -128,41 +127,30 @@ VOID extrasSetDlgIcon(
 {
     HANDLE hIcon;
 
-    hIcon = LoadImage(g_hInstance, MAKEINTRESOURCE(IDI_ICON_MAIN), IMAGE_ICON, 0, 0, LR_SHARED);
+    hIcon = LoadImage(g_WinObj.hInstance, MAKEINTRESOURCE(IDI_ICON_MAIN), IMAGE_ICON, 0, 0, LR_SHARED);
     if (hIcon) {
         SetClassLongPtr(hwndDlg, GCLP_HICON, (LONG_PTR)hIcon);
-        DestroyIcon(hIcon);
+        DestroyIcon((HICON)hIcon);
     }
 }
 
 /*
-* extrasShowPipeDialog
+* extrasShowIPCDialog
 *
 * Purpose:
 *
-* Display Pipe Properties Dialog.
+* Display Pipe/Mailslots Properties Dialog.
 *
 */
-VOID extrasShowPipeDialog(
-    _In_ HWND hwndParent
+VOID extrasShowIPCDialog(
+    _In_ HWND hwndParent,
+    _In_ ULONG CallerId
 )
 {
-    extrasCreateIpcDialog(hwndParent, IpcModeNamedPipes);
-}
-
-/*
-* extrasShowMailslotsDialog
-*
-* Purpose:
-*
-* Display Mailslots Properties Dialog.
-*
-*/
-VOID extrasShowMailslotsDialog(
-    _In_ HWND hwndParent
-)
-{
-    extrasCreateIpcDialog(hwndParent, IpcModeMailshots);
+    if (CallerId == ID_EXTRAS_MAILSLOTS) 
+        extrasCreateIpcDialog(hwndParent, IpcModeMailSlots);
+    else if (CallerId == ID_EXTRAS_PIPES)
+        extrasCreateIpcDialog(hwndParent, IpcModeNamedPipes);
 }
 
 /*
@@ -204,10 +192,14 @@ VOID extrasShowPrivateNamespacesDialog(
 *
 */
 VOID extrasShowSSDTDialog(
-    _In_ HWND hwndParent
+    _In_ HWND hwndParent,
+    _In_ ULONG CallerId
 )
 {
-    extrasCreateSSDTDialog(hwndParent);
+    if (CallerId == ID_EXTRAS_SSDT)
+        extrasCreateSSDTDialog(hwndParent, SST_Ntos);
+    else if (CallerId == ID_EXTRAS_W32PSERVICETABLE)
+        extrasCreateSSDTDialog(hwndParent, SST_Win32k);
 }
 
 /*
@@ -223,4 +215,34 @@ VOID extrasShowDriversDialog(
 )
 {
     extrasCreateDriversDialog(hwndParent);
+}
+
+/*
+* extrasShowPsListDialog
+*
+* Purpose:
+*
+* Display Process list dialog.
+*
+*/
+VOID extrasShowPsListDialog(
+    _In_ HWND hwndParent
+)
+{
+    extrasCreatePsListDialog(hwndParent);
+}
+
+/*
+* extrasShowCallbacksDialog
+*
+* Purpose:
+*
+* Display Callbacks dialog.
+*
+*/
+VOID extrasShowCallbacksDialog(
+    _In_ HWND hwndParent
+)
+{
+    extrasCreateCallbacksDialog(hwndParent);
 }

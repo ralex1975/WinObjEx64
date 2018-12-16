@@ -11,10 +11,10 @@ WinObjEx64 is an advanced utility that lets you explore the Windows Object Manag
 WinObjEx64 does not require administrative privileges. However administrative privilege is required to view much of the namespace and to edit object-related security information.
 
 
-WinObjEx64 works only on the following x64 Windows: Windows 7, Windows 8, Windows 8.1 and Windows 10 (TH1, TH2, RS1, RS2), including Server variants.
+WinObjEx64 works only on the following x64 Windows: Windows 7, Windows 8, Windows 8.1 and Windows 10, including Server variants.
 
+WinObjEx64 also supports running on Wine, including Wine Staging.
 
-WinObjEx64 does not work on Windows XP, Windows Vista is partially supported. We have no plans of their full support.
 
 In order to use all program features Windows must be booted in the DEBUG mode.
 
@@ -22,15 +22,25 @@ In order to use all program features Windows must be booted in the DEBUG mode.
 
 WinObjEx64 comes with full source code.
 In order to build from source you need Microsoft Visual Studio 2013 U4 or Visual Studio 2015 and later versions.
- 
-# Changelog
 
-For a changelog see program help file -> History or changelog.txt in Source directory.
+## Instructions
+
+* Select Platform ToolSet first for project in solution you want to build (Project->Properties->General): 
+  * v120 for Visual Studio 2013;
+  * v140 for Visual Studio 2015; 
+  * v141 for Visual Studio 2017.
+* For v140 and above set Target Platform Version (Project->Properties->General):
+  * If v140 then select 8.1 (Note that Windows 8.1 SDK must be installed);
+  * If v141 then select 10.0.17134.0 (Note that Windows 10.0.17134 SDK must be installed). 
+ 
+# What is new
+
+[Whats New in 1.7](https://github.com/hfiref0x/WinObjEx64/blob/master/Compiled/WHATSNEW.md)
 
 
 # Authors
 
 
-(c) 2015 - 2017 WinObjEx64 Project
+(c) 2015 - 2018 WinObjEx64 Project
 
 Original WinObjEx (c) 2003 - 2005 Four-F

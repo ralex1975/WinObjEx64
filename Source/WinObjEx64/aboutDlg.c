@@ -1,12 +1,12 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2015 - 2017
+*  (C) COPYRIGHT AUTHORS, 2015 - 2018
 *
 *  TITLE:       ABOUTDLG.C
 *
-*  VERSION:     1.45
+*  VERSION:     1.70
 *
-*  DATE:        11 Jan 2017
+*  DATE:        03 Dec 2018
 *
 * THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
 * ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED
@@ -14,85 +14,13 @@
 * PARTICULAR PURPOSE.
 *
 *******************************************************************************/
+#define OEMRESOURCE
 #include "global.h"
+#include "msvcver.h"
 
-#define T_SECUREBOOTSTATEKEY    L"System\\CurrentControlSet\\Control\\SecureBoot\\State"
-#define T_SECUREBOOTSTATEVALUE  L"UEFISecureBootEnabled"
-
-/*
-* AboutDialogQuerySecureBootState
-*
-* Purpose:
-*
-* Query Firmware type and SecureBoot state if firmware is EFI.
-*
-*/
-BOOL AboutDialogQuerySecureBootState(
-    _In_ PBOOLEAN pbSecureBoot
-)
-{
-    BOOL    cond = FALSE, bResult = FALSE;
-    BOOLEAN bSecureBoot = FALSE;
-    HKEY    hKey;
-    DWORD   dwState, dwSize, returnLength;
-    LSTATUS lRet;
-
-    //first attempt, query firmware environment variable, will not work if not fulladmin
-    do {
-        if (!supEnablePrivilege(SE_SYSTEM_ENVIRONMENT_PRIVILEGE, TRUE))
-            break;
-
-        bSecureBoot = FALSE;
-        returnLength = GetFirmwareEnvironmentVariable(L"SecureBoot",
-            L"{8be4df61-93ca-11d2-aa0d-00e098032b8c}", &bSecureBoot, sizeof(BOOLEAN));
-        supEnablePrivilege(SE_SYSTEM_ENVIRONMENT_PRIVILEGE, FALSE);
-        if (returnLength != 0) {
-            if (pbSecureBoot) {
-                *pbSecureBoot = bSecureBoot;
-            }
-            bResult = TRUE;
-        }
-
-    } while (cond);
-
-    if (bResult) {
-        return bResult;
-    }
-
-    //second attempt, query state from registry
-    do {
-        lRet = RegOpenKeyEx(HKEY_LOCAL_MACHINE, T_SECUREBOOTSTATEKEY, 0, KEY_QUERY_VALUE, &hKey);
-        if (lRet != ERROR_SUCCESS)
-            break;
-
-        dwState = 0;
-        dwSize = sizeof(DWORD);
-        lRet = RegQueryValueExW(hKey, T_SECUREBOOTSTATEVALUE, NULL, NULL, (LPBYTE)&dwState, &dwSize);
-        if (lRet != ERROR_SUCCESS)
-            break;
-
-        if (pbSecureBoot) {
-            *pbSecureBoot = (dwState == 1);
-        }
-        bResult = TRUE;
-
-        RegCloseKey(hKey);
-
-    } while (cond);
-
-    if (bResult) {
-        return bResult;
-    }
-
-    //third attempt, query state from user shared data
-    dwState = USER_SHARED_DATA->DbgSecureBootEnabled;
-    if (pbSecureBoot) {
-        *pbSecureBoot = (dwState == 1);
-    }
-    bResult = TRUE;
-
-    return bResult;
-}
+HWND g_hwndGlobals;
+HFONT _hFontGlobalsDlg;
+WNDPROC g_GlobalsEditOriginalWndProc;
 
 /*
 * AboutDialogInit
@@ -110,98 +38,273 @@ VOID AboutDialogInit(
     ULONG    returnLength;
     NTSTATUS status;
     HANDLE   hImage;
-    WCHAR    buf[MAX_PATH];
+    SIZE_T   l;
+    WCHAR    szBuffer[MAX_PATH];
 
     SYSTEM_BOOT_ENVIRONMENT_INFORMATION sbei;
+    SYSTEM_VHD_BOOT_INFORMATION *psvbi;
 
     SetDlgItemText(hwndDlg, ID_ABOUT_PROGRAM, PROFRAM_NAME_AND_TITLE);
     SetDlgItemText(hwndDlg, ID_ABOUT_BUILDINFO, PROGRAM_VERSION);
 
-    hImage = LoadImage(g_hInstance, MAKEINTRESOURCE(IDI_ICON_MAIN), IMAGE_ICON, 48, 48, LR_SHARED);
+    hImage = LoadImage(g_WinObj.hInstance, MAKEINTRESOURCE(IDI_ICON_MAIN), IMAGE_ICON, 48, 48, LR_SHARED);
     if (hImage) {
         SendMessage(GetDlgItem(hwndDlg, ID_ABOUT_ICON), STM_SETIMAGE, IMAGE_ICON, (LPARAM)hImage);
-        DestroyIcon(hImage);
+        DestroyIcon((HICON)hImage);
     }
 
     //remove class icon if any
     SetClassLongPtr(hwndDlg, GCLP_HICON, (LONG_PTR)NULL);
 
-    RtlSecureZeroMemory(buf, sizeof(buf));
-
-#if (_MSC_VER == 1900) //2015
-#if (_MSC_FULL_VER == 190023026) //2015 RTM
-    _strcpy(buf, L"MSVC 2015");
-#elif (_MSC_FULL_VER == 190023506) // 2015 Update 1
-    _strcpy(buf, L"MSVC 2015 Update 1");
-#elif (_MSC_FULL_VER == 190023918) // 2015 Update 2
-    _strcpy(buf, L"MSVC 2015 Update 2");
-#elif (_MSC_FULL_VER == 190024210) // 2015 Update 3
-    _strcpy(buf, L"MSVC 2015 Update 3");
-#elif (_MSC_FULL_VER == 190024215) // 2015 Update 3 with Cumulative Servicing Release
-    _strcpy(buf, L"MSVC 2015 Update 3 CSR");
-#endif
-#else
-#if (_MSC_VER == 1800) //2013
-#if (_MSC_FULL_VER == 180040629)
-    _strcpy(buf, L"MSVC 2013 Update 5");
-#elif (_MSC_FULL_VER == 180031101)
-    _strcpy(buf, L"MSVC 2013 Update 4");
-#elif (_MSC_FULL_VER == 180030723)
-    _strcpy(buf, L"MSVC 2013 Update 3");
-#elif (_MSC_FULL_VER == 180030501)
-    _strcpy(buf, L"MSVC 2013 Update 2");
-#elif (_MSC_FULL_VER < 180021005)
-    _strcpy(buf, L"MSVC 2013 Preview/Beta/RC");
-#else
-    _strcpy(buf, L"MSVC 2013");
-#endif
-#else
-    _strcpy(buf, L"Unknown Compiler");
-#endif
-#endif
-    if (buf[0] == 0) {
-        ultostr(_MSC_FULL_VER, buf);
+    RtlSecureZeroMemory(szBuffer, sizeof(szBuffer));
+    _strcpy(szBuffer, VC_VER);
+    if (szBuffer[0] == 0) {
+        _strcpy(szBuffer, TEXT("MSVC ("));
+        ultostr(_MSC_FULL_VER, _strend(szBuffer));
+        _strcat(szBuffer, TEXT(")"));
     }
-    SetDlgItemText(hwndDlg, ID_ABOUT_COMPILERINFO, buf);
+#if defined(__cplusplus)
+    _strcat(szBuffer, TEXT(" compiled as C++"));
+#else
+    _strcat(szBuffer, TEXT(" compiled as C"));
+#endif
 
-    RtlSecureZeroMemory(buf, sizeof(buf));
-    MultiByteToWideChar(CP_ACP, 0, __DATE__, (INT)_strlen_a(__DATE__), _strend(buf), 40);
-    _strcat(buf, TEXT(" "));
-    MultiByteToWideChar(CP_ACP, 0, __TIME__, (INT)_strlen_a(__TIME__), _strend(buf), 40);
-    SetDlgItemText(hwndDlg, ID_ABOUT_BUILDDATE, buf);
+    SetDlgItemText(hwndDlg, ID_ABOUT_COMPILERINFO, szBuffer);
+
+    RtlSecureZeroMemory(szBuffer, sizeof(szBuffer));
+    MultiByteToWideChar(CP_ACP, 0, __DATE__, (INT)_strlen_a(__DATE__), _strend(szBuffer), 40);
+    _strcat(szBuffer, TEXT(" "));
+    MultiByteToWideChar(CP_ACP, 0, __TIME__, (INT)_strlen_a(__TIME__), _strend(szBuffer), 40);
+    SetDlgItemText(hwndDlg, ID_ABOUT_BUILDDATE, szBuffer);
 
     // fill OS name
-    wsprintf(buf, TEXT("Windows NT %1u.%1u (build %u"),
-        g_kdctx.osver.dwMajorVersion, g_kdctx.osver.dwMinorVersion, g_kdctx.osver.dwBuildNumber);
-    if (g_kdctx.osver.szCSDVersion[0]) {
-        wsprintf(_strend(buf), TEXT(", %ws)"), g_kdctx.osver.szCSDVersion);
+    wsprintf(szBuffer, TEXT("Windows NT %1u.%1u (build %u"),
+        g_WinObj.osver.dwMajorVersion, g_WinObj.osver.dwMinorVersion, g_WinObj.osver.dwBuildNumber);
+    if (g_WinObj.osver.szCSDVersion[0]) {
+        wsprintf(_strend(szBuffer), TEXT(", %ws)"), g_WinObj.osver.szCSDVersion);
     }
     else {
-        _strcat(buf, TEXT(")"));
+        _strcat(szBuffer, TEXT(")"));
     }
-    SetDlgItemText(hwndDlg, ID_ABOUT_OSNAME, buf);
+    SetDlgItemText(hwndDlg, ID_ABOUT_OSNAME, szBuffer);
 
     // fill boot options
-    RtlSecureZeroMemory(&buf, sizeof(buf));
+    RtlSecureZeroMemory(&szBuffer, sizeof(szBuffer));
     RtlSecureZeroMemory(&sbei, sizeof(sbei));
+    l = 0;
+
+    // query kd debugger enabled
+    if (kdIsDebugBoot()) {
+        _strcpy(&szBuffer[l], TEXT("Debug, "));
+        l = _strlen(szBuffer);
+    }
+
+    // query vhd boot state if possible
+    psvbi = (SYSTEM_VHD_BOOT_INFORMATION*)supHeapAlloc(PAGE_SIZE);
+    if (psvbi) {
+        status = NtQuerySystemInformation(SystemVhdBootInformation, psvbi, PAGE_SIZE, &returnLength);
+        if (NT_SUCCESS(status)) {
+            if (psvbi->OsDiskIsVhd) {
+                _strcpy(&szBuffer[l], TEXT("VHD, "));
+                l = _strlen(szBuffer);
+            }
+        }
+        supHeapFree(psvbi);
+    }
+
+    // query firmware mode and secure boot state for uefi
     status = NtQuerySystemInformation(SystemBootEnvironmentInformation, &sbei, sizeof(sbei), &returnLength);
     if (NT_SUCCESS(status)) {
-        wsprintf(buf, TEXT("%ws mode"),
+        wsprintf(&szBuffer[l], TEXT("%ws mode"),
             ((sbei.FirmwareType == FirmwareTypeUefi) ? TEXT("UEFI") : ((sbei.FirmwareType == FirmwareTypeBios) ? TEXT("BIOS") : TEXT("Unknown"))));
 
         if (sbei.FirmwareType == FirmwareTypeUefi) {
             bSecureBoot = FALSE;
-            if (AboutDialogQuerySecureBootState(&bSecureBoot)) {
-                wsprintf(_strend(buf), TEXT(" with%ws SecureBoot"), (bSecureBoot == TRUE) ? TEXT("") : TEXT("out"));
+            if (supQuerySecureBootState(&bSecureBoot)) {
+                wsprintf(_strend(szBuffer), TEXT(" with%ws SecureBoot"), (bSecureBoot == TRUE) ? TEXT("") : TEXT("out"));
             }
         }
     }
     else {
-        _strcpy(buf, TEXT("Unknown"));
+        _strcpy(&szBuffer[l], TEXT("Unknown"));
     }
-    SetDlgItemText(hwndDlg, ID_ABOUT_ADVINFO, buf);
+    SetDlgItemText(hwndDlg, ID_ABOUT_ADVINFO, szBuffer);
 
     SetFocus(GetDlgItem(hwndDlg, IDOK));
+}
+
+/*
+* AboutDialogCollectGlobals
+*
+* Purpose:
+*
+* Build globals list (g_kdctx).
+*
+*/
+VOID AboutDialogCollectGlobals(
+    _In_ LPWSTR lpDestBuffer)
+{
+    _strcpy(lpDestBuffer, TEXT("EnableExperimentalFeatures: "));
+    ultostr(g_WinObj.EnableExperimentalFeatures, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("IsFullAdmin: "));
+    ultostr(g_kdctx.IsFullAdmin, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("IsOurLoad: "));
+    ultostr(g_kdctx.IsOurLoad, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("IsWine: "));
+    ultostr(g_kdctx.IsWine, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("DirectoryRootAddress: 0x"));
+    u64tohex(g_kdctx.DirectoryRootAddress, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("DirectoryTypeIndex: "));
+    ultostr(g_kdctx.DirectoryTypeIndex, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("hDevice: 0x"));
+    u64tostr((ULONG_PTR)g_kdctx.hDevice, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("IopInvalidDeviceRequest: 0x"));
+    u64tostr((ULONG_PTR)g_kdctx.IopInvalidDeviceRequest, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("KiServiceLimit: 0x"));
+    ultohex(g_kdctx.KiServiceLimit, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("KiServiceTableAddress: 0x"));
+    u64tohex(g_kdctx.KiServiceTableAddress, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("NtOsBase: 0x"));
+    u64tohex((ULONG_PTR)g_kdctx.NtOsBase, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("NtOsSize: 0x"));
+    ultohex(g_kdctx.NtOsSize, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("ObHeaderCookie: 0x"));
+    ultohex((ULONG)g_kdctx.ObHeaderCookie, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("PrivateNamespaceLookupTable: 0x"));
+    u64tohex((ULONG_PTR)g_kdctx.PrivateNamespaceLookupTable, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+
+    _strcat(lpDestBuffer, TEXT("SystemRangeStart: 0x"));
+    u64tohex((ULONG_PTR)g_kdctx.SystemRangeStart, _strend(lpDestBuffer));
+    _strcat(lpDestBuffer, TEXT("\r\n"));
+}
+
+/*
+* GlobalsCustomWindowProc
+*
+* Purpose:
+*
+* Globals custom window procedure.
+*
+*/
+LRESULT CALLBACK GlobalsCustomWindowProc(
+    _In_ HWND hwnd,
+    _In_ UINT uMsg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam
+)
+{
+    switch (uMsg) {
+    case WM_DESTROY:
+        if (_hFontGlobalsDlg) {
+            DeleteObject(_hFontGlobalsDlg);
+        }
+        break;
+    case WM_CLOSE:
+        g_hwndGlobals = NULL;
+        break;
+    default:
+        break;
+    }
+    return CallWindowProc(g_GlobalsEditOriginalWndProc, hwnd, uMsg, wParam, lParam);
+}
+
+/*
+* AboutDialogShowGlobals
+*
+* Purpose:
+*
+* Output global variables to multiline edit window.
+*
+*/
+INT_PTR AboutDialogShowGlobals(
+    _In_ HWND hwndParent)
+{
+    HWND hwnd;
+    LPWSTR lpGlobalInfo;
+    NONCLIENTMETRICS ncm;
+
+    if (g_hwndGlobals == NULL) {
+
+        ncm.cbSize = sizeof(NONCLIENTMETRICS);
+        if (SystemParametersInfo(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+            ncm.lfCaptionFont.lfHeight += ncm.lfSmCaptionFont.lfHeight / 4;
+            ncm.lfCaptionFont.lfWeight = FW_NORMAL;
+            ncm.lfCaptionFont.lfQuality = CLEARTYPE_QUALITY;
+            ncm.lfCaptionFont.lfPitchAndFamily = FIXED_PITCH | FF_MODERN;
+            _strcpy(ncm.lfCaptionFont.lfFaceName, TEXT("Courier New"));
+
+            _hFontGlobalsDlg = CreateFontIndirect(&ncm.lfCaptionFont);
+        }
+
+        hwnd = CreateWindowEx(
+            0,
+            WC_EDIT,
+            TEXT("WinObjEx64 Globals"),
+            WS_OVERLAPPEDWINDOW | WS_VSCROLL | ES_MULTILINE,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            640,
+            480,
+            hwndParent,
+            0,
+            g_WinObj.hInstance,
+            NULL);
+
+        if (hwnd) {
+            SendMessage(hwnd, WM_SETFONT, (WPARAM)_hFontGlobalsDlg, 0);
+            g_GlobalsEditOriginalWndProc = (WNDPROC)GetWindowLongPtr(hwnd, GWLP_WNDPROC);
+            if (g_GlobalsEditOriginalWndProc) {
+                SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)&GlobalsCustomWindowProc);
+            }
+        }
+        g_hwndGlobals = hwnd;
+    }
+    else {
+        SetActiveWindow(g_hwndGlobals);
+    }
+
+    //
+    // Set text to window.
+    //
+    if (g_hwndGlobals) {
+        lpGlobalInfo = (LPWSTR)supVirtualAlloc(PAGE_SIZE);
+        if (lpGlobalInfo) {
+            AboutDialogCollectGlobals(lpGlobalInfo);
+            SetWindowText(g_hwndGlobals, lpGlobalInfo);
+            SendMessage(g_hwndGlobals, EM_SETREADONLY, (WPARAM)1, 0);
+            supVirtualFree(lpGlobalInfo);
+        }
+        ShowWindow(g_hwndGlobals, SW_SHOWNORMAL);
+    }
+
+    return 1;
 }
 
 /*
@@ -231,9 +334,18 @@ INT_PTR CALLBACK AboutDialogProc(
         break;
 
     case WM_COMMAND:
-        if ((LOWORD(wParam) == IDOK) || (LOWORD(wParam) == IDCANCEL))
-            EndDialog(hwndDlg, S_OK);
-        break;
+
+        switch (LOWORD(wParam)) {
+        case IDOK:
+        case IDCANCEL:
+            return EndDialog(hwndDlg, S_OK);
+            break;
+        case IDC_ABOUT_GLOBALS:
+            return AboutDialogShowGlobals(hwndDlg);
+            break;
+        default:
+            break;
+        }
 
     default:
         break;

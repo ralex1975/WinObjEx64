@@ -1,12 +1,12 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2015 - 2017
+*  (C) COPYRIGHT AUTHORS, 2015 - 2018
 *
 *  TITLE:       KLDBG.H
 *
-*  VERSION:     1.46
+*  VERSION:     1.70
 *
-*  DATE:        31 Jan 2017
+*  DATE:        30 Nov 2018
 *
 *  Common header file for the Kernel Debugger Driver support.
 *
@@ -19,13 +19,16 @@
 #pragma once
 
 #define IOCTL_KD_PASS_THROUGH CTL_CODE(FILE_DEVICE_UNKNOWN, 0x1, METHOD_NEITHER, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
-#define OBJECT_SHIFT 8
 
+#ifdef _USE_OWN_DRIVER 
+#define KLDBGDRV                L"wodbgdrv"
+#define KLDBGDRVSYS             L"\\drivers\\wodbgdrv.sys"
+#else
 #define KLDBGDRV                L"kldbgdrv"
 #define KLDBGDRVSYS             L"\\drivers\\kldbgdrv.sys"
-#define RegControlKey           L"System\\CurrentControlSet\\Control"
-#define RegStartOptionsValue    L"SystemStartOptions"
-#define NTOSFOLDERSYSTEM32      L"\\\\?\\globalroot\\systemroot\\system32" //no slash at end
+#endif
+
+#define OBJECT_SHIFT 8
 
 typedef ULONG_PTR *PUTable;
 
@@ -38,7 +41,15 @@ typedef enum _OBJ_HEADER_INFO_FLAG {
     HeaderProcessInfoFlag = 0x10
 } OBJ_HEADER_INFO_FLAG;
 
+typedef struct _OBJECT_COLLECTION {
+    LIST_ENTRY ListHead;
+    HANDLE Heap;
+} OBJECT_COLLECTION, *POBJECT_COLLECTION;
+
 typedef struct _KLDBGCONTEXT {
+
+    //Is debugging enabled
+    BOOL ShowKdError;
 
     //Is user full admin
     BOOL IsFullAdmin;
@@ -53,48 +64,50 @@ typedef struct _KLDBGCONTEXT {
     UCHAR ObHeaderCookie;
 
     //index of directory type and root address
-    UCHAR DirectoryTypeIndex;
+    USHORT DirectoryTypeIndex;
     ULONG_PTR DirectoryRootAddress;
 
     //kldbgdrv device handle
     HANDLE hDevice;
 
-    //worker handle
-    HANDLE hThreadWorker;
-
     //address of invalid request handler
     PVOID IopInvalidDeviceRequest;
 
     //address of PrivateNamespaceLookupTable
-    PVOID ObpPrivateNamespaceLookupTable;
+    PVOID PrivateNamespaceLookupTable;
 
-    //value of nt!KiServiceLimit
+    //ntoskrnl base and size
+    PVOID NtOsBase;
+    ULONG NtOsSize;
+
+    //ntoskrnl mapped image
+    PVOID NtOsImageMap;
+
+    //syscall tables related info
     ULONG KiServiceLimit;
-
-    //address of nt!KiServiceTable
+    ULONG W32pServiceLimit;
     ULONG_PTR KiServiceTableAddress;
+    ULONG_PTR W32pServiceTableAddress;
+    ULONG_PTR KeServiceDescriptorTableShadow;
 
     //system range start
     ULONG_PTR SystemRangeStart;
 
-    //object list head
-    LIST_ENTRY ObjectList;
+    //objects collection
+    OBJECT_COLLECTION ObCollection;
 
     //object list lock
     CRITICAL_SECTION ListLock;
 
-    //osversion 
-    RTL_OSVERSIONINFOW osver;
-
 } KLDBGCONTEXT, *PKLDBGCONTEXT;
 
-//global context
-KLDBGCONTEXT g_kdctx;
+extern KLDBGCONTEXT g_kdctx;
+extern ULONG g_NtBuildNumber;
 
 typedef struct _KLDBG {
     SYSDBG_COMMAND SysDbgRequest;
-    PVOID OutputBuffer;
-    DWORD OutputBufferSize;
+    PVOID Buffer;
+    DWORD BufferSize;
 }KLDBG, *PKLDBG;
 
 typedef struct _OBJINFO {
@@ -106,79 +119,201 @@ typedef struct _OBJINFO {
     OBJECT_HEADER ObjectHeader;
 } OBJINFO, *POBJINFO;
 
+typedef struct _OBJREFPNS {
+    ULONG SizeOfBoundaryInformation;
+    ULONG_PTR NamespaceDirectoryAddress; //point to OBJECT_DIRECTORY
+    ULONG_PTR NamespaceLookupEntry; //point to OBJECT_NAMESPACE_ENTRY
+} OBJREFPNS, *POBJREFPNS;
+
 typedef struct _OBJREF {
     LIST_ENTRY ListEntry;
     LPWSTR ObjectName;
     ULONG_PTR HeaderAddress;
     ULONG_PTR ObjectAddress;
-    ULONG_PTR NamespaceDirectoryAddress; //point to OBJECT_DIRECTORY
-    ULONG_PTR NamespaceId;
     UCHAR TypeIndex;
+    OBJREFPNS PrivateNamespace;
 } OBJREF, *POBJREF;
 
-DWORD WINAPI kdQueryProc(
-    _In_  LPVOID lpParameter
-);
+//
+// Callbacks support.
+//
+
+//
+// Actual limits, not variables.
+//
+#define PspNotifyRoutinesLimit                  64
+#define PspCreateProcessNotifyRoutineExCount    64
+#define PspCreateThreadNotifyRoutineCount       64
+#define PspLoadImageNotifyRoutineCount          64
+
+typedef struct _NOTIFICATION_CALLBACKS {
+    ULONG_PTR PspCreateProcessNotifyRoutine;
+    ULONG_PTR PspCreateThreadNotifyRoutine;
+    ULONG_PTR PspLoadImageNotifyRoutine;
+    ULONG_PTR KeBugCheckCallbackHead;
+    ULONG_PTR KeBugCheckReasonCallbackHead;
+    ULONG_PTR CmCallbackListHead;
+    ULONG_PTR IopNotifyShutdownQueueHead;
+    ULONG_PTR IopNotifyLastChanceShutdownQueueHead;
+    ULONG_PTR ObProcessCallbackHead;
+    ULONG_PTR ObThreadCallbackHead;
+    ULONG_PTR ObDesktopCallbackHead;
+    ULONG_PTR SeFileSystemNotifyRoutinesHead;
+    ULONG_PTR SeFileSystemNotifyRoutinesExHead;
+    ULONG_PTR PopRegisteredPowerSettingCallbacks;
+    ULONG_PTR RtlpDebugPrintCallbackList;
+    ULONG_PTR IopFsNotifyChangeQueueHead;
+    ULONG_PTR IopDiskFileSystemQueueHead;
+    ULONG_PTR IopCdRomFileSystemQueueHead;
+    ULONG_PTR IopTapeFileSystemQueueHead;
+    ULONG_PTR IopNetworkFileSystemQueueHead;
+} NOTIFICATION_CALLBACKS, *PNOTIFICATION_CALLBACKS;
+
+extern NOTIFICATION_CALLBACKS g_NotifyCallbacks;
+
+// return true to stop enumeration
+typedef BOOL(CALLBACK *PENUMERATE_COLLECTION_CALLBACK)(
+    _In_ POBJREF CollectionEntry,
+    _In_opt_ PVOID Context
+    );
+
+// return true to stop enumeration
+typedef BOOL(CALLBACK *PENUMERATE_BOUNDARY_DESCRIPTOR_CALLBACK)(
+    _In_ OBJECT_BOUNDARY_ENTRY *Entry,
+    _In_opt_ PVOID Context
+    );
+
+/*
+* ObGetObjectFastReference
+*
+* Purpose:
+*
+* Return unbiased pointer.
+*
+*/
+__forceinline PVOID ObGetObjectFastReference(
+    _In_ EX_FAST_REF FastRef)
+{
+    return (PVOID)(FastRef.Value & ~MAX_FAST_REFS);
+}
+
+NTSTATUS ObCopyBoundaryDescriptor(
+    _In_ OBJECT_NAMESPACE_ENTRY *NamespaceLookupEntry,
+    _Out_ POBJECT_BOUNDARY_DESCRIPTOR *BoundaryDescriptor,
+    _Out_opt_ PULONG BoundaryDescriptorSize);
+
+NTSTATUS ObEnumerateBoundaryDescriptorEntries(
+    _In_ OBJECT_BOUNDARY_DESCRIPTOR *BoundaryDescriptor,
+    _In_opt_ PENUMERATE_BOUNDARY_DESCRIPTOR_CALLBACK Callback,
+    _In_opt_ PVOID Context);
 
 UCHAR ObDecodeTypeIndex(
     _In_ PVOID Object,
-    _In_ UCHAR EncodedTypeIndex
-);
+    _In_ UCHAR EncodedTypeIndex);
+
+_Success_(return != NULL)
+PVOID ObDumpObjectTypeVersionAware(
+    _In_ ULONG_PTR ObjectAddress,
+    _Out_ PULONG Size,
+    _Out_ PULONG Version);
+
+_Success_(return != NULL)
+PVOID ObDumpAlpcPortObjectVersionAware(
+    _In_ ULONG_PTR ObjectAddress,
+    _Out_ PULONG Size,
+    _Out_ PULONG Version);
+
+_Success_(return != NULL)
+PVOID ObDumpDirectoryObjectVersionAware(
+    _In_ ULONG_PTR ObjectAddress,
+    _Out_ PULONG Size,
+    _Out_ PULONG Version);
 
 POBJINFO ObQueryObject(
     _In_ LPWSTR lpDirectory,
-    _In_ LPWSTR lpObjectName
-);
+    _In_ LPWSTR lpObjectName);
+
+POBJINFO ObQueryObjectByAddress(
+    _In_ ULONG_PTR ObjectAddress);
 
 BOOL ObDumpTypeInfo(
     _In_    ULONG_PTR ObjectAddress,
-    _Inout_ POBJECT_TYPE_COMPATIBLE ObjectTypeInfo
-);
+    _Inout_ POBJECT_TYPE_COMPATIBLE ObjectTypeInfo);
 
 LPWSTR ObQueryNameString(
     _In_      ULONG_PTR NameInfoAddress,
-    _Out_opt_ PSIZE_T ReturnLength
-);
+    _Out_opt_ PSIZE_T ReturnLength);
 
 BOOL ObHeaderToNameInfoAddress(
     _In_    UCHAR ObjectInfoMask,
     _In_    ULONG_PTR ObjectAddress,
     _Inout_ PULONG_PTR HeaderAddress,
-    _In_    OBJ_HEADER_INFO_FLAG InfoFlag
-);
+    _In_    OBJ_HEADER_INFO_FLAG InfoFlag);
 
-BOOL ObListCreate(
-    _Inout_ PLIST_ENTRY ListHead,
-    _In_    BOOL fNamespace
-);
+BOOL ObHeaderToNameInfoAddressEx(
+    _In_ UCHAR ObjectInfoMask,
+    _In_ ULONG_PTR ObjectAddress,
+    _Inout_ PULONG_PTR HeaderAddress,
+    _In_ BYTE DesiredHeaderBit);
 
-VOID ObListDestroy(
-    _In_ PLIST_ENTRY ListHead
-);
+BOOL ObCollectionCreate(
+    _In_ POBJECT_COLLECTION Collection,
+    _In_ BOOL fNamespace,
+    _In_ BOOL Locked);
 
-POBJREF ObListFindByAddress(
-    _In_ PLIST_ENTRY ListHead,
-    _In_ ULONG_PTR	 ObjectAddress
-);
+VOID ObCollectionDestroy(
+    _In_ POBJECT_COLLECTION Collection);
+
+BOOL ObCollectionEnumerate(
+    _In_ POBJECT_COLLECTION Collection,
+    _In_ PENUMERATE_COLLECTION_CALLBACK Callback,
+    _In_opt_ PVOID Context);
+
+POBJREF ObCollectionFindByAddress(
+    _In_ POBJECT_COLLECTION Collection,
+    _In_ ULONG_PTR ObjectAddress,
+    _In_ BOOLEAN fNamespace);
+
+PVOID ObGetCallbackBlockRoutine(
+    _In_ PVOID CallbackBlock);
+
+PVOID kdQueryIopInvalidDeviceRequest(
+    VOID);
+
+_Success_(return == TRUE)
+BOOL kdFindKiServiceTables(
+    _In_ ULONG_PTR MappedImageBase,
+    _In_ ULONG_PTR KernelImageBase,
+    _Out_opt_ ULONG_PTR *KiServiceTablePtr,
+    _Out_opt_ ULONG *KiServiceLimit,
+    _Out_opt_ ULONG_PTR *W32pServiceTable,
+    _Out_opt_ ULONG *W32pServiceLimit);
 
 BOOL kdReadSystemMemory(
     _In_    ULONG_PTR Address,
     _Inout_ PVOID Buffer,
-    _In_    ULONG BufferSize
-);
+    _In_    ULONG BufferSize);
 
 _Success_(return == TRUE)
 BOOL kdReadSystemMemoryEx(
     _In_ ULONG_PTR Address,
     _Inout_ PVOID Buffer,
     _In_ ULONG BufferSize,
-    _Out_opt_ PULONG NumberOfBytesRead
-);
+    _Out_opt_ PULONG NumberOfBytesRead);
+
+BOOL __forceinline kdAddressInNtOsImage(
+    _In_ PVOID Address);
 
 VOID kdInit(
-    BOOL IsFullAdmin
-);
+    _In_ BOOL IsFullAdmin);
+
+BOOL kdIsDebugBoot(
+    VOID);
 
 VOID kdShutdown(
-    VOID
-);
+    VOID);
+
+VOID kdShowError(
+    _In_ ULONG InputBufferLength,
+    _In_ NTSTATUS Status,
+    _In_ PIO_STATUS_BLOCK Iosb);

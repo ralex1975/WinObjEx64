@@ -1,14 +1,14 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2015
+*  (C) COPYRIGHT AUTHORS, 2018
 *
-*  TITLE:       LDR.H
+*  TITLE:       EXTRASCALLBACKS.H
 *
-*  VERSION:     1.32
+*  VERSION:     1.70
 *
-*  DATE:        12 Nov 2015
+*  DATE:        30 Nov 2018
 *
-*  Common header file for PE loader unit.
+*  Common header file for Callbacks dialog.
 *
 * THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
 * ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED
@@ -19,7 +19,5 @@
 
 #pragma once
 
-LPVOID peldrLoadImage(
-	_In_ LPVOID Buffer,
-	_Out_opt_ PDWORD SizeOfImage
-	);
+VOID extrasCreateCallbacksDialog(
+    _In_ HWND hwndParent);

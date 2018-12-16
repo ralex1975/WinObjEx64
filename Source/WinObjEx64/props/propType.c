@@ -1,12 +1,12 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2015 - 2017
+*  (C) COPYRIGHT AUTHORS, 2015 - 2018
 *
 *  TITLE:       PROPTYPE.C
 *
-*  VERSION:     1.46
+*  VERSION:     1.70
 *
-*  DATE:        05 Mar 2017
+*  DATE:        30 Nov 2018
 *
 * THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
 * ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED
@@ -78,171 +78,171 @@ VOID propSetTypeDecodeValue(
 
     switch (TypeIndex) {
 
-    case TYPE_WMIGUID:
+    case ObjectTypeWMIGuid:
         Desc = a_WmiGuidProp;
         Count = MAX_KNOWN_WMIGUID_ATTRIBUTES;
         break;
 
-    case TYPE_WINSTATION:
+    case ObjectTypeWinstation:
         Desc = a_WinstaProp;
         Count = MAX_KNOWN_WINSTA_ATTRIBUTES;
         break;
 
-    case TYPE_TOKEN:
+    case ObjectTypeToken:
         Desc = a_TokenProp;
         Count = MAX_KNOWN_TOKEN_ATTRIBUTES;
         break;
 
-    case TYPE_THREAD:
+    case ObjectTypeThread:
         Desc = a_ThreadProp;
         Count = MAX_KNOWN_THREAD_ATTRIBUTES;
         break;
 
-    case TYPE_IRTIMER:
-    case TYPE_TIMER:
+    case ObjectTypeIRTimer:
+    case ObjectTypeTimer:
         Desc = a_TimerProp;
         Count = MAX_KNOWN_TIMER_ATTRIBUTES;
         break;
 
-    case TYPE_PROCESS:
+    case ObjectTypeProcess:
         Desc = a_ProcessProp;
         Count = MAX_KNOWN_PROCESS_ATTRIBUTES;
         break;
 
-    case TYPE_KEYEDEVENT:
+    case ObjectTypeKeyedEvent:
         Desc = a_KeyedEventProp;
         Count = MAX_KNOWN_KEYEDEVENT_ATTRIBUTES;
         break;
 
-    case TYPE_JOB:
+    case ObjectTypeJob:
         Desc = a_JobProp;
         Count = MAX_KNOWN_JOB_ATTRIBUTES;
         break;
 
-    case TYPE_DESKTOP:
+    case ObjectTypeDesktop:
         Desc = a_DesktopObjectProp;
         Count = MAX_KNOWN_DESKTOP_ATTRIBUTES;
         break;
 
-    case TYPE_DEBUGOBJECT:
+    case ObjectTypeDebugObject:
         Desc = a_DebugObjectProp;
         Count = MAX_KNOWN_DEBUGOBJECT_ATTRIBUTES;
         break;
 
-    case TYPE_CALLBACK:
+    case ObjectTypeCallback:
         Desc = a_CallbackProp;
         Count = MAX_KNOWN_CALLBACK_ATTRIBUTES;
         break;
 
-    case TYPE_ADAPTER:
-    case TYPE_CONTROLLER:
-    case TYPE_DEVICE:
-    case TYPE_DRIVER:
-    case TYPE_FILE:
+    case ObjectTypeAdapter:
+    case ObjectTypeController:
+    case ObjectTypeDevice:
+    case ObjectTypeDriver:
+    case ObjectTypeFile:
         Desc = a_FileProp;
         Count = MAX_KNOWN_FILE_ATTRIBUTES;
         break;
 
-    case TYPE_KEY:
+    case ObjectTypeKey:
         Desc = a_KeyProp;
         Count = MAX_KNOWN_KEY_ATTRIBUTES;
         break;
 
-    case TYPE_TYPE:
+    case ObjectTypeType:
         Desc = a_TypeProp;
         Count = MAX_KNOWN_TYPE_ATTRIBUTES;
         break;
 
-    case TYPE_SYMLINK:
+    case ObjectTypeSymbolicLink:
         Desc = a_SymLinkProp;
         Count = MAX_KNOWN_SYMLINK_ATTRIBUTES;
         break;
 
-    case TYPE_DIRECTORY:
+    case ObjectTypeDirectory:
         Desc = a_DirProp;
         Count = MAX_KNOWN_DIRECTORY_ATTRIBUTES;
         break;
 
-    case TYPE_EVENT:
+    case ObjectTypeEvent:
         Desc = a_EventProp;
         Count = MAX_KNOWN_EVENT_ATTRIBUTES;
         break;
 
-    case TYPE_MUTANT:
+    case ObjectTypeMutant:
         Desc = a_MutantProp;
         Count = MAX_KNOWN_MUTANT_ATTRIBUTES;
         break;
 
         //all ports
-    case TYPE_FLTCOMM_PORT:
-    case TYPE_FLTCONN_PORT:
-    case TYPE_WAITABLEPORT:
-    case TYPE_PORT:
+    case ObjectTypeFltComnPort:
+    case ObjectTypeFltConnPort:
+    case ObjectTypeWaitablePort:
+    case ObjectTypePort:
         Desc = a_PortProp;
         Count = MAX_KNOWN_PORT_ATTRIBUTES;
         break;
 
-    case TYPE_PROFILE:
+    case ObjectTypeProfile:
         Desc = a_ProfileProp;
         Count = MAX_KNOWN_PROFILE_ATTRIBUTES;
         break;
 
-    case TYPE_SECTION:
+    case ObjectTypeSection:
         Desc = a_SectionProp;
         Count = MAX_KNOWN_SECTION_ATTRIBUTES;
         break;
 
-    case TYPE_SEMAPHORE:
+    case ObjectTypeSemaphore:
         Desc = a_SemaphoreProp;
         Count = MAX_KNOWN_SEMAPHORE_ATTRIBUTES;
         break;
 
-    case TYPE_IOCOMPLETION:
+    case ObjectTypeIoCompletion:
         Desc = a_IoCompletionProp;
         Count = MAX_KNOWN_IOCOMPLETION_ATTRIBUTES;
         break;
 
         //Transaction Object
-    case TYPE_TMTX:
+    case ObjectTypeTmTx:
         Desc = a_TmTxProp;
         Count = MAX_KNOWN_TMTX_ATTRIBUTES;
         break;
 
         //Transaction Resource Manager Object
-    case TYPE_TMRM:
+    case ObjectTypeTmRm:
         Desc = a_TmRmProp;
         Count = MAX_KNOWN_TMRM_ATTRIBUTES;
         break;
 
         //Transaction Enlistment Object 
-    case TYPE_TMEN:
+    case ObjectTypeTmEn:
         Desc = a_TmEnProp;
         Count = MAX_KNOWN_TMEN_ATTRIBUTES;
         break;
 
         //Transaction Manager Object
-    case TYPE_TMTM:
+    case ObjectTypeTmTm:
         Desc = a_TmTmProp;
         Count = MAX_KNOWN_TMTM_ATTRIBUTES;
         break;
 
-    case TYPE_TPWORKERFACTORY:
+    case ObjectTypeTpWorkerFactory:
         Desc = a_TpwfProp;
         Count = MAX_KNOWN_TPWORKERFACTORY_ATTRIBUTES;
         break;
 
-    case TYPE_PCWOBJECT:
+    case ObjectTypePcwObject:
         Desc = a_PcwProp;
         Count = MAX_KNOWN_PCWOBJECT_ATTRIBUTES;
         break;
 
-    case TYPE_COMPOSITION:
+    case ObjectTypeComposition:
         Desc = a_CompositionProp;
         Count = MAX_KNOWN_COMPOSITION_ATTRIBUTES;
         break;
 
         //Parition object
-    case TYPE_MEMORYPARTITION:
+    case ObjectTypeMemoryPartition:
         Desc = a_MemPartProp;
         Count = MAX_KNOWN_MEMPARTITION_ATTRIBUTES;
         break;
@@ -253,10 +253,12 @@ VOID propSetTypeDecodeValue(
     }
 
     //list for selected type
-    for (i = 0; i < Count; i++) {
-        if (Value & Desc[i].dwValue) {
-            propSetTypeFlagValue(hListView, Desc[i].lpDescription, Desc[i].dwValue);
-            Value &= ~Desc[i].dwValue;
+    if (Desc) {
+        for (i = 0; i < Count; i++) {
+            if (Value & Desc[i].dwValue) {
+                propSetTypeFlagValue(hListView, Desc[i].lpDescription, Desc[i].dwValue);
+                Value &= ~Desc[i].dwValue;
+            }
         }
     }
 
@@ -301,15 +303,15 @@ VOID propSetTypeFlags(
 {
     INT  i;
     HWND hwndCB;
-
-    if (ObjectFlags == 0)
-        return;
+    BOOL bObjectFlagsSet = FALSE;
 
     hwndCB = GetDlgItem(hwndDlg, IDC_TYPE_FLAGS);
     if (hwndCB) {
-        EnableWindow(hwndCB, (ObjectFlags > 0) ? TRUE : FALSE);
+        bObjectFlagsSet = (ObjectFlags != 0);
+        EnableWindow(hwndCB, bObjectFlagsSet);
         SendMessage(hwndCB, CB_RESETCONTENT, (WPARAM)0, (LPARAM)0);
-        if (ObjectFlags) {
+        if (bObjectFlagsSet) {
+            EnableWindow(hwndCB, TRUE);
             for (i = 0; i < 8; i++) {
                 if (GET_BIT(ObjectFlags, i)) SendMessage(hwndCB, CB_ADDSTRING,
                     (WPARAM)0, (LPARAM)T_ObjectTypeFlags[i]);
@@ -487,6 +489,8 @@ VOID propSetTypeListView(
     ListView_SetExtendedListViewStyle(hListRights,
         LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
 
+    SetWindowTheme(hListRights, TEXT("Explorer"), NULL);
+
     RtlSecureZeroMemory(&col, sizeof(col));
     col.mask = LVCF_TEXT | LVCF_SUBITEM | LVCF_FMT | LVCF_WIDTH;
     col.iSubItem = 1;
@@ -513,9 +517,10 @@ VOID propSetTypeListView(
 * Used if object dumped info not available (restricted user, no driver etc).
 *
 */
+_Success_(return == TRUE)
 BOOL propQueryTypeInfo(
     _In_ LPWSTR lpObjectType,
-    _Inout_ POBJECT_TYPE_COMPATIBLE pObjectTypeDump
+    _Out_ POBJECT_TYPE_COMPATIBLE pObjectTypeDump
 )
 {
     BOOL     bResult = FALSE, cond = FALSE;
@@ -537,17 +542,26 @@ BOOL propQueryTypeInfo(
     __try {
 
         do {
-            pObjectTypes = supGetObjectTypesInfo();
+            pObjectTypes = (POBJECT_TYPES_INFORMATION)supGetObjectTypesInfo();
             if (pObjectTypes == NULL) {
                 break;
             }
-            pObject = (POBJECT_TYPE_INFORMATION)&pObjectTypes->TypeInformation;
-            for (i = 0; i < pObjectTypes->NumberOfTypes; i++) {
-                sz = (pObject->TypeName.MaximumLength) + sizeof(UNICODE_NULL);
-                lpType = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sz);
-                if (lpType) {
 
-                    _strncpy(lpType, sz / sizeof(WCHAR), pObject->TypeName.Buffer,
+            if (g_kdctx.IsWine) {
+                pObject = OBJECT_TYPES_FIRST_ENTRY_WINE(pObjectTypes);
+            }
+            else {
+                pObject = OBJECT_TYPES_FIRST_ENTRY(pObjectTypes);
+            }
+
+            for (i = 0; i < pObjectTypes->NumberOfTypes; i++) {
+
+                sz = (pObject->TypeName.MaximumLength) + sizeof(UNICODE_NULL);
+                lpType = (LPWSTR)supHeapAlloc(sz);
+                if (lpType) {
+                    _strncpy(lpType,
+                        sz / sizeof(WCHAR),
+                        pObject->TypeName.Buffer,
                         pObject->TypeName.Length / sizeof(WCHAR));
 
                     if (_strcmpi(lpType, lpObjectType) == 0) {
@@ -560,7 +574,7 @@ BOOL propQueryTypeInfo(
                         pObjectTypeDump->TypeInfo.DefaultPagedPoolCharge = pObject->DefaultPagedPoolCharge;
                         pObjectTypeDump->HighWaterNumberOfHandles = pObject->HighWaterNumberOfHandles;
                         pObjectTypeDump->HighWaterNumberOfObjects = pObject->HighWaterNumberOfObjects;
-                        pObjectTypeDump->TypeInfo.PoolType = pObject->PoolType;
+                        pObjectTypeDump->TypeInfo.PoolType = (POOL_TYPE)pObject->PoolType;
                         if (pObject->SecurityRequired) {
                             SET_BIT(pObjectTypeDump->TypeInfo.ObjectTypeFlags, 3);
                         }
@@ -569,18 +583,17 @@ BOOL propQueryTypeInfo(
                         }
                         bResult = TRUE;
                     }
-                    HeapFree(GetProcessHeap(), 0, lpType);
+                    supHeapFree(lpType);
                     if (bResult) {
                         break;
                     }
                 }
-                pObject = (POBJECT_TYPE_INFORMATION)((PCHAR)(pObject + 1) +
-                    ALIGN_UP(pObject->TypeName.MaximumLength, sizeof(ULONG_PTR)));
+                pObject = OBJECT_TYPES_NEXT_ENTRY(pObject);
             }
         } while (cond);
 
         if (pObjectTypes) {
-            HeapFree(GetProcessHeap(), 0, pObjectTypes);
+            supHeapFree(pObjectTypes);
         }
     }
     __except (exceptFilter(GetExceptionCode(), GetExceptionInformation())) {
@@ -616,17 +629,22 @@ VOID propSetTypeInfo(
     }
 
     nIndex = Context->RealTypeIndex;
-    if ((Context->RealTypeIndex > TYPE_UNKNOWN) || (Context->RealTypeIndex < TYPE_DEVICE)) {
-        nIndex = TYPE_UNKNOWN;
+    if ((Context->RealTypeIndex > ObjectTypeUnknown) ||
+        (Context->RealTypeIndex < ObjectTypeDevice))
+    {
+        nIndex = ObjectTypeUnknown;
     }
 
     //if type is not known set it description to it type name
-    if (nIndex == TYPE_UNKNOWN) {
+    if (nIndex == ObjectTypeUnknown) {
         lpTypeDescription = Context->lpObjectType;
     }
     else {
         RtlSecureZeroMemory(&szType, sizeof(szType));
-        if (LoadString(g_hInstance, TYPE_DESCRIPTION_START_INDEX + nIndex, szType,
+        if (LoadString(
+            g_WinObj.hInstance,
+            TYPE_DESCRIPTION_START_INDEX + nIndex,
+            szType,
             (MAX_PATH * sizeof(WCHAR)) - sizeof(UNICODE_NULL)))
         {
             lpTypeDescription = szType;
@@ -642,8 +660,8 @@ VOID propSetTypeInfo(
     }
 
     //
-    // Handle special case 
-    // Current object is Object Type, display Type Info
+    // Handle special case.
+    // Current object is Type object, display Type Info.
     //
     bOkay = FALSE;
     RtlSecureZeroMemory(&ObjectTypeDump, sizeof(ObjectTypeDump));
@@ -658,14 +676,16 @@ VOID propSetTypeInfo(
         }
 
         //if type is not known set it description to it type name
-        if (Context->RealTypeIndex == TYPE_UNKNOWN)
+        if (Context->RealTypeIndex == ObjectTypeUnknown)
             lpTypeDescription = Context->lpObjectName;
         else {
             //set description
             RtlSecureZeroMemory(&szType, sizeof(szType));
-            if (LoadString(g_hInstance, TYPE_DESCRIPTION_START_INDEX + Context->RealTypeIndex, szType,
-                (MAX_PATH * 2) - sizeof(UNICODE_NULL)
-            ))
+            if (LoadString(
+                g_WinObj.hInstance,
+                TYPE_DESCRIPTION_START_INDEX + Context->RealTypeIndex,
+                szType,
+                (MAX_PATH * 2) - sizeof(UNICODE_NULL)))
             {
                 lpTypeDescription = szType;
             }
@@ -675,22 +695,32 @@ VOID propSetTypeInfo(
         }
     }
     else {
-        //query object type object
+
+        //
+        // Query object type object.
+        //
         pObject = ObQueryObject(T_OBJECTTYPES, Context->lpObjectType);
 
-        //cannot query, no driver or other error, try second method
+        //
+        // If we cannot query because of no driver or other error, try second method.
+        //
         if (pObject == NULL) {
             bOkay = propQueryTypeInfo(Context->lpObjectType, &ObjectTypeDump);
         }
+
     }
 
-    //set description label
+    //
+    // Set description label.
+    //
     SetDlgItemText(hwndDlg, ID_TYPE_DESCRIPTION, lpTypeDescription);
 
-    //driver info available, dump type
+    //
+    // Driver info available, dump type.
+    //
     if (pObject != NULL) {
         bOkay = ObDumpTypeInfo(pObject->ObjectAddress, &ObjectTypeDump);
-        HeapFree(GetProcessHeap(), 0, pObject);
+        supHeapFree(pObject);
     }
 
     if (bOkay) {
@@ -755,10 +785,10 @@ VOID propSetTypeInfo(
 *
 */
 INT_PTR CALLBACK TypePropDialogProc(
-    _In_  HWND hwndDlg,
-    _In_  UINT uMsg,
-    _In_  WPARAM wParam,
-    _In_  LPARAM lParam
+    _In_ HWND hwndDlg,
+    _In_ UINT uMsg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam
 )
 {
     HDC               hDc;
@@ -768,7 +798,7 @@ INT_PTR CALLBACK TypePropDialogProc(
 
     switch (uMsg) {
     case WM_SHOWWINDOW:
-        Context = GetProp(hwndDlg, T_PROPCONTEXT);
+        Context = (PROP_OBJECT_INFO*)GetProp(hwndDlg, T_PROPCONTEXT);
         if (Context) {
             //show window
             if (wParam) {
@@ -794,7 +824,7 @@ INT_PTR CALLBACK TypePropDialogProc(
     case WM_COMMAND:
         if (LOWORD(wParam) == ID_TYPE_ATTRLIST) {
             if (HIWORD(wParam) == LBN_SELCHANGE) {
-                Context = GetProp(hwndDlg, T_PROPCONTEXT);
+                Context = (PROP_OBJECT_INFO*)GetProp(hwndDlg, T_PROPCONTEXT);
                 propSetTypeDecodedAttributes(Context, hwndDlg);
             }
         }
@@ -802,11 +832,11 @@ INT_PTR CALLBACK TypePropDialogProc(
         break;
 
     case WM_PAINT:
-        Context = GetProp(hwndDlg, T_PROPCONTEXT);
+        Context = (PROP_OBJECT_INFO*)GetProp(hwndDlg, T_PROPCONTEXT);
         if (Context) {
             hDc = BeginPaint(hwndDlg, &Paint);
             if (hDc) {
-                ImageList_Draw(ListViewImages, Context->RealTypeIndex, hDc, 24, 34,
+                ImageList_Draw(g_ListViewImages, Context->RealTypeIndex, hDc, 24, 34,
                     ILD_NORMAL | ILD_TRANSPARENT);
                 EndPaint(hwndDlg, &Paint);
             }

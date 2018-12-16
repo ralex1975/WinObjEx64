@@ -1,12 +1,12 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2016 - 2017
+*  (C) COPYRIGHT AUTHORS, 2016 - 2018
 *
 *  TITLE:       EXTRASDRIVERS.C
 *
-*  VERSION:     1.46
+*  VERSION:     1.70
 *
-*  DATE:        04 Mar 2017
+*  DATE:        30 Nov 2018
 *
 * THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
 * ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED
@@ -17,7 +17,7 @@
 #include "global.h"
 #include "extras.h"
 
-EXTRASCONTEXT DlgContext;
+EXTRASCONTEXT DrvDlgContext;
 
 /*
 * DrvHandlePopupMenu
@@ -37,17 +37,14 @@ VOID DrvHandlePopupMenu(
     if (g_kdctx.hDevice == NULL)
         return;
 
-    if (GetCursorPos(&pt1) == FALSE)
-        return;
-
-    hMenu = CreatePopupMenu();
-    if (hMenu == NULL)
-        return;
-
-    InsertMenu(hMenu, 0, MF_BYCOMMAND, ID_OBJECT_COPY, T_DUMPDRIVER);
-
-    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_LEFTALIGN, pt1.x, pt1.y, 0, hwndDlg, NULL);
-    DestroyMenu(hMenu);
+    if (GetCursorPos(&pt1)) {
+        hMenu = CreatePopupMenu();
+        if (hMenu) {
+            InsertMenu(hMenu, 0, MF_BYCOMMAND, ID_OBJECT_COPY, T_DUMPDRIVER);
+            TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_LEFTALIGN, pt1.x, pt1.y, 0, hwndDlg, NULL);
+            DestroyMenu(hMenu);
+        }
+    }
 }
 
 /*
@@ -65,81 +62,103 @@ VOID DrvDumpDriver(
     BOOL      bCond = FALSE, bSuccess = FALSE;
     INT       iPos;
     ULONG     ImageSize;
-    SIZE_T    memIO;
-    LPWSTR    lpDriverName = NULL, tmp = NULL;
+    SIZE_T    sz;
+    LPWSTR    lpDriverName = NULL;
     PVOID     DumpedDrv = NULL;
     ULONG_PTR ImageBase = 0;
-    WCHAR     szBuffer[MAX_PATH * 2];
+    WCHAR     szBuffer[MAX_PATH * 2], szDriverDumpInfo[MAX_TEXT_CONVERSION_ULONG64 + 1];
 
     do {
-        iPos = ListView_GetNextItem(DlgContext.ListView, -1, LVNI_SELECTED);
+        //
+        // Remember selected index.
+        //
+        iPos = ListView_GetNextItem(DrvDlgContext.ListView, -1, LVNI_SELECTED);
         if (iPos < 0)
             break;
 
-        lpDriverName = supGetItemText(DlgContext.ListView, iPos, 1, NULL);
+        //
+        // Query selected driver name.
+        //
+        sz = 0;
+        lpDriverName = supGetItemText(DrvDlgContext.ListView, iPos, 1, &sz);
         if (lpDriverName == NULL)
             break;
 
         RtlSecureZeroMemory(&szBuffer, sizeof(szBuffer));
-        _strncpy(szBuffer, MAX_PATH, lpDriverName, MAX_PATH);
+        _strncpy(szBuffer, MAX_PATH, lpDriverName, sz / sizeof(WCHAR));
 
-        if (!supSaveDialogExecute(DlgContext.hwndDlg, szBuffer, TEXT("All files\0*.*\0\0")))
+        //
+        // Run Save As Dialog.
+        //
+        if (!supSaveDialogExecute(DrvDlgContext.hwndDlg, szBuffer, TEXT("All files\0*.*\0\0")))
             break;
 
-        tmp = supGetItemText(DlgContext.ListView, iPos, 2, NULL);
-        if (tmp == NULL)
-            break;
+        //
+        // Query driver address from listview.
+        //
+        RtlSecureZeroMemory(szDriverDumpInfo, sizeof(szDriverDumpInfo));
+        supGetItemText2(
+            DrvDlgContext.ListView,
+            iPos,
+            2,
+            szDriverDumpInfo,
+            MAX_TEXT_CONVERSION_ULONG64);
 
-        ImageBase = hextou64(&tmp[2]);
+        ImageBase = hextou64(&szDriverDumpInfo[2]);
         if (ImageBase < g_kdctx.SystemRangeStart)
             break;
 
-        HeapFree(GetProcessHeap(), 0, tmp);
-        tmp = NULL;
+        //
+        // Query driver size from listview.
+        //
+        RtlSecureZeroMemory(szDriverDumpInfo, sizeof(szDriverDumpInfo));
+        supGetItemText2(
+            DrvDlgContext.ListView,
+            iPos,
+            3,
+            szDriverDumpInfo,
+            MAX_TEXT_CONVERSION_ULONG64);
 
-        tmp = supGetItemText(DlgContext.ListView, iPos, 3, NULL);
-        if (tmp == NULL)
-            break;
-
-        ImageSize = strtoul(tmp);
+        ImageSize = strtoul(szDriverDumpInfo);
         if (ImageSize == 0)
             break;
 
-        HeapFree(GetProcessHeap(), 0, tmp);
-        tmp = NULL;
+        //
+        // Allocate buffer for dump and read kernel memory.
+        //
+        DumpedDrv = supVirtualAlloc((SIZE_T)ImageSize);
+        if (DumpedDrv) {
 
-        memIO = ImageSize;
-        NtAllocateVirtualMemory(NtCurrentProcess(), &DumpedDrv, 0, &memIO, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (DumpedDrv == NULL)
-            break;
+            supSetWaitCursor(TRUE);
 
-        //ignore read errors
-        supSetWaitCursor(TRUE);
-        bSuccess = kdReadSystemMemory(ImageBase, DumpedDrv, ImageSize);
-        supSetWaitCursor(FALSE);
+            //
+            // Ignore read errors during dump.
+            //
+            bSuccess = kdReadSystemMemory(ImageBase, DumpedDrv, ImageSize);
+            supSetWaitCursor(FALSE);
 
-        if (supWriteBufferToFile(szBuffer, DumpedDrv, ImageSize, FALSE, FALSE) == ImageSize)
-            _strcpy(szBuffer, TEXT("Driver saved to disk"));
-        else
-            _strcpy(szBuffer, TEXT("Driver save to disk error"));
+            if (supWriteBufferToFile(szBuffer, DumpedDrv, ImageSize, FALSE, FALSE) == ImageSize)
+                _strcpy(szBuffer, TEXT("Driver saved to disk"));
+            else
+                _strcpy(szBuffer, TEXT("Driver save to disk error"));
 
-        _strcat(szBuffer, TEXT(", kernel memory read was "));
+            //
+            // Free allocated buffer.
+            //
+            supVirtualFree(DumpedDrv);
 
-        if (bSuccess)
-            _strcat(szBuffer, TEXT("successful"));
-        else
-            _strcat(szBuffer, TEXT("partially successful"));
+            _strcat(szBuffer, TEXT(", kernel memory read was "));
+            if (bSuccess)
+                _strcat(szBuffer, TEXT("successful"));
+            else
+                _strcat(szBuffer, TEXT("partially successful"));
 
-        MessageBox(DlgContext.hwndDlg, szBuffer, PROGRAM_NAME, MB_ICONINFORMATION);
+            MessageBox(DrvDlgContext.hwndDlg, szBuffer, PROGRAM_NAME, MB_ICONINFORMATION);
+        }
 
     } while (bCond);
 
-    if (lpDriverName != NULL) HeapFree(GetProcessHeap(), 0, lpDriverName);
-    if (tmp != NULL) HeapFree(GetProcessHeap(), 0, tmp);
-    if (DumpedDrv != NULL) {
-        memIO = 0;
-        NtFreeVirtualMemory(NtCurrentProcess(), &DumpedDrv, &memIO, MEM_RELEASE);
-    }
+    if (lpDriverName) supHeapFree(lpDriverName);
 }
 
 /*
@@ -164,7 +183,7 @@ VOID DrvListDrivers(
     PRTL_PROCESS_MODULE_INFORMATION pModule;
 
     do {
-        pModulesList = supGetSystemInfo(SystemModuleInformation);
+        pModulesList = (PRTL_PROCESS_MODULES)supGetSystemInfo(SystemModuleInformation);
         if (pModulesList == NULL)
             break;
 
@@ -180,23 +199,27 @@ VOID DrvListDrivers(
             //LoadOrder
             lvitem.mask = LVIF_TEXT | LVIF_IMAGE;
             lvitem.iItem = MAXINT;
-            lvitem.iImage = TYPE_DRIVER; //imagelist id
+            lvitem.iImage = ObjectTypeDriver; //imagelist id
             RtlSecureZeroMemory(szBuffer, sizeof(szBuffer));
             ultostr(pModule->LoadOrderIndex, szBuffer);
             lvitem.pszText = szBuffer;
-            index = ListView_InsertItem(DlgContext.ListView, &lvitem);
+            index = ListView_InsertItem(DrvDlgContext.ListView, &lvitem);
 
             //Name
             RtlSecureZeroMemory(szBuffer, sizeof(szBuffer));
-            MultiByteToWideChar(CP_ACP, 0,
+
+            MultiByteToWideChar(
+                CP_ACP, 0,
                 (LPCSTR)&pModule->FullPathName[pModule->OffsetToFileName],
-                -1, szBuffer, MAX_PATH);
+                -1,
+                szBuffer,
+                MAX_PATH);
 
             lvitem.mask = LVIF_TEXT;
             lvitem.iSubItem++;
             lvitem.pszText = szBuffer;
             lvitem.iItem = index;
-            ListView_SetItem(DlgContext.ListView, &lvitem);
+            ListView_SetItem(DrvDlgContext.ListView, &lvitem);
 
             //Address
             RtlSecureZeroMemory(szBuffer, sizeof(szBuffer));
@@ -204,26 +227,32 @@ VOID DrvListDrivers(
             szBuffer[1] = L'x';
             u64tohex((ULONG_PTR)pModule->ImageBase, &szBuffer[2]);
             lvitem.iSubItem++;
-            ListView_SetItem(DlgContext.ListView, &lvitem);
+            ListView_SetItem(DrvDlgContext.ListView, &lvitem);
 
             //Size
             RtlSecureZeroMemory(szBuffer, sizeof(szBuffer));
             ultostr(pModule->ImageSize, szBuffer);
             lvitem.iSubItem++;
-            ListView_SetItem(DlgContext.ListView, &lvitem);
+            ListView_SetItem(DrvDlgContext.ListView, &lvitem);
 
             //FullName
             RtlSecureZeroMemory(szBuffer, sizeof(szBuffer));
-            MultiByteToWideChar(CP_ACP, 0,
+
+            MultiByteToWideChar(
+                CP_ACP,
+                0,
                 (LPCSTR)&pModule->FullPathName,
-                -1, szBuffer, MAX_PATH);
+                -1,
+                szBuffer,
+                MAX_PATH);
+
             lvitem.iSubItem++;
-            ListView_SetItem(DlgContext.ListView, &lvitem);
+            ListView_SetItem(DrvDlgContext.ListView, &lvitem);
         }
 
     } while (bCond);
 
-    if (pModulesList) HeapFree(GetProcessHeap(), 0, pModulesList);
+    if (pModulesList) supHeapFree(pModulesList);
 }
 
 /*
@@ -240,70 +269,35 @@ INT CALLBACK DrvDlgCompareFunc(
     _In_ LPARAM lParamSort
 )
 {
-    LPWSTR    lpItem1 = NULL, lpItem2 = NULL;
-    INT       nResult = 0;
-    ULONG     id1, id2;
-    ULONG_PTR ad1, ad2;
-
-    lpItem1 = supGetItemText(DlgContext.ListView, (INT)lParam1, (INT)lParamSort, NULL);
-    lpItem2 = supGetItemText(DlgContext.ListView, (INT)lParam2, (INT)lParamSort, NULL);
-
-    if ((lpItem1 == NULL) && (lpItem2 == NULL)) {
-        nResult = 0;
-        goto Done;
-    }
-
-    if ((lpItem1 == NULL) && (lpItem2 != NULL)) {
-        nResult = (DlgContext.bInverseSort) ? 1 : -1;
-        goto Done;
-    }
-    if ((lpItem2 == NULL) && (lpItem1 != NULL)) {
-        nResult = (DlgContext.bInverseSort) ? -1 : 1;
-        goto Done;
-    }
+    INT nResult = 0;
 
     switch (lParamSort) {
+    case 0: //Load Order
+    case 3: //Size
+        return supGetMaxOfTwoULongFromString(
+            DrvDlgContext.ListView,
+            lParam1,
+            lParam2,
+            lParamSort,
+            DrvDlgContext.bInverseSort);
 
-        //sort Load Order, Size
-    case 0:
-    case 3:
-        id1 = strtoul(lpItem1);
-        id2 = strtoul(lpItem2);
+    case 2: //Address
+        return supGetMaxOfTwoU64FromHex(
+            DrvDlgContext.ListView,
+            lParam1,
+            lParam2,
+            lParamSort,
+            DrvDlgContext.bInverseSort);
 
-        if (DlgContext.bInverseSort)
-            nResult = id1 < id2;
-        else
-            nResult = id1 > id2;
-
-        break;
-
-        //sort Address
-    case 2:
-
-        ad1 = hextou64(&lpItem1[2]);
-        ad2 = hextou64(&lpItem2[2]);
-
-        if (DlgContext.bInverseSort)
-            nResult = ad1 < ad2;
-        else
-            nResult = ad1 > ad2;
-
-        break;
-
-        //sort Name, Module
-    case 1:
-    case 4:
-    default:
-        if (DlgContext.bInverseSort)
-            nResult = _strcmpi(lpItem2, lpItem1);
-        else
-            nResult = _strcmpi(lpItem1, lpItem2);
-        break;
+    case 1: //Name
+    case 4: //Module
+        return supGetMaxCompareTwoFixedStrings(
+            DrvDlgContext.ListView,
+            lParam1,
+            lParam2,
+            lParamSort,
+            DrvDlgContext.bInverseSort);
     }
-
-Done:
-    if (lpItem1) HeapFree(GetProcessHeap(), 0, lpItem1);
-    if (lpItem2) HeapFree(GetProcessHeap(), 0, lpItem2);
 
     return nResult;
 }
@@ -342,7 +336,7 @@ VOID CALLBACK DriversHandleNotify(
                 RtlSecureZeroMemory(szBuffer, sizeof(szBuffer));
                 if (supGetWin32FileName(lpItem, szBuffer, MAX_PATH))
                     supShowProperties(Context->hwndDlg, szBuffer);
-                HeapFree(GetProcessHeap(), 0, lpItem);
+                supHeapFree(lpItem);
             }
         }
     }
@@ -379,17 +373,17 @@ INT_PTR CALLBACK DriversDialogProc(
         break;
 
     case WM_NOTIFY:
-        extrasDlgHandleNotify(nhdr, &DlgContext, &DrvDlgCompareFunc, DriversHandleNotify, NULL);
+        extrasDlgHandleNotify(nhdr, &DrvDlgContext, &DrvDlgCompareFunc, DriversHandleNotify, NULL);
         break;
 
     case WM_SIZE:
-        extrasSimpleListResize(hwndDlg, DlgContext.SizeGrip);
+        extrasSimpleListResize(hwndDlg, DrvDlgContext.SizeGrip);
         break;
 
     case WM_CLOSE:
-        if (DlgContext.SizeGrip) DestroyWindow(DlgContext.SizeGrip);
+        if (DrvDlgContext.SizeGrip) DestroyWindow(DrvDlgContext.SizeGrip);
         DestroyWindow(hwndDlg);
-        g_wobjDialogs[WOBJ_DRVDLG_IDX] = NULL;
+        g_WinObj.AuxDialogs[wobjDriversDlgId] = NULL;
         return TRUE;
 
     case WM_COMMAND:
@@ -426,77 +420,83 @@ VOID extrasCreateDriversDialog(
     LVCOLUMN col;
 
     //allow only one dialog
-    if (g_wobjDialogs[WOBJ_DRVDLG_IDX]) {
-        if (IsIconic(g_wobjDialogs[WOBJ_DRVDLG_IDX]))
-            ShowWindow(g_wobjDialogs[WOBJ_DRVDLG_IDX], SW_RESTORE);
+    if (g_WinObj.AuxDialogs[wobjDriversDlgId]) {
+        if (IsIconic(g_WinObj.AuxDialogs[wobjDriversDlgId]))
+            ShowWindow(g_WinObj.AuxDialogs[wobjDriversDlgId], SW_RESTORE);
         else
-            SetActiveWindow(g_wobjDialogs[WOBJ_DRVDLG_IDX]);
+            SetActiveWindow(g_WinObj.AuxDialogs[wobjDriversDlgId]);
         return;
     }
 
-    RtlSecureZeroMemory(&DlgContext, sizeof(DlgContext));
-    DlgContext.hwndDlg = CreateDialogParam(g_hInstance, MAKEINTRESOURCE(IDD_DIALOG_EXTRASLIST),
+    RtlSecureZeroMemory(&DrvDlgContext, sizeof(DrvDlgContext));
+    DrvDlgContext.hwndDlg = CreateDialogParam(g_WinObj.hInstance, MAKEINTRESOURCE(IDD_DIALOG_EXTRASLIST),
         hwndParent, &DriversDialogProc, 0);
 
-    if (DlgContext.hwndDlg == NULL) {
+    if (DrvDlgContext.hwndDlg == NULL) {
         return;
     }
 
-    g_wobjDialogs[WOBJ_DRVDLG_IDX] = DlgContext.hwndDlg;
+    g_WinObj.AuxDialogs[wobjDriversDlgId] = DrvDlgContext.hwndDlg;
 
-    SetWindowText(DlgContext.hwndDlg, TEXT("Drivers"));
+    SetWindowText(DrvDlgContext.hwndDlg, TEXT("Drivers"));
 
-    DlgContext.SizeGrip = supCreateSzGripWindow(DlgContext.hwndDlg);
+    DrvDlgContext.SizeGrip = supCreateSzGripWindow(DrvDlgContext.hwndDlg);
 
-    extrasSetDlgIcon(DlgContext.hwndDlg);
+    extrasSetDlgIcon(DrvDlgContext.hwndDlg);
 
-    DlgContext.ListView = GetDlgItem(DlgContext.hwndDlg, ID_EXTRASLIST);
-    if (DlgContext.ListView) {
+    DrvDlgContext.ListView = GetDlgItem(DrvDlgContext.hwndDlg, ID_EXTRASLIST);
+    if (DrvDlgContext.ListView) {
 
-        ListView_SetImageList(DlgContext.ListView, ListViewImages, LVSIL_SMALL);
-        ListView_SetExtendedListViewStyle(DlgContext.ListView,
+        //
+        // Set listview imagelist, style flags and theme.
+        //
+        ListView_SetImageList(DrvDlgContext.ListView, g_ListViewImages, LVSIL_SMALL);
+        ListView_SetExtendedListViewStyle(DrvDlgContext.ListView,
             LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+
+        SetWindowTheme(DrvDlgContext.ListView, TEXT("Explorer"), NULL);
 
         RtlSecureZeroMemory(&col, sizeof(col));
         col.mask = LVCF_TEXT | LVCF_SUBITEM | LVCF_FMT | LVCF_WIDTH | LVCF_ORDER | LVCF_IMAGE;
         col.iSubItem++;
         col.pszText = TEXT("#");
         col.fmt = LVCFMT_LEFT | LVCFMT_BITMAP_ON_RIGHT;
-        col.iImage = ImageList_GetImageCount(ListViewImages) - 1;
+        col.iImage = ImageList_GetImageCount(g_ListViewImages) - 1;
         col.cx = 60;
-        ListView_InsertColumn(DlgContext.ListView, col.iSubItem, &col);
+        ListView_InsertColumn(DrvDlgContext.ListView, col.iSubItem, &col);
+
+        col.iImage = I_IMAGENONE;
 
         col.iSubItem++;
         col.pszText = TEXT("Name");
-        col.iImage = -1;
         col.iOrder++;
         col.cx = 160;
-        ListView_InsertColumn(DlgContext.ListView, col.iSubItem, &col);
+        ListView_InsertColumn(DrvDlgContext.ListView, col.iSubItem, &col);
 
         col.iSubItem++;
         col.pszText = TEXT("Address");
         col.iOrder++;
         col.cx = 130;
-        ListView_InsertColumn(DlgContext.ListView, col.iSubItem, &col);
+        ListView_InsertColumn(DrvDlgContext.ListView, col.iSubItem, &col);
 
         col.iSubItem++;
         col.pszText = TEXT("Size");
         col.iOrder++;
         col.cx = 80;
-        ListView_InsertColumn(DlgContext.ListView, col.iSubItem, &col);
+        ListView_InsertColumn(DrvDlgContext.ListView, col.iSubItem, &col);
 
         col.iSubItem++;
         col.pszText = TEXT("Image Path");
         col.iOrder++;
         col.cx = 280;
-        ListView_InsertColumn(DlgContext.ListView, col.iSubItem, &col);
+        ListView_InsertColumn(DrvDlgContext.ListView, col.iSubItem, &col);
 
         //remember col count
-        DlgContext.lvColumnCount = col.iSubItem;
+        DrvDlgContext.lvColumnCount = col.iSubItem;
 
         DrvListDrivers();
-        SendMessage(DlgContext.hwndDlg, WM_SIZE, 0, 0);
+        SendMessage(DrvDlgContext.hwndDlg, WM_SIZE, 0, 0);
 
-        ListView_SortItemsEx(DlgContext.ListView, &DrvDlgCompareFunc, 0);
+        ListView_SortItemsEx(DrvDlgContext.ListView, &DrvDlgCompareFunc, 0);
     }
 }

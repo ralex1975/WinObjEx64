@@ -1,14 +1,14 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2015 - 2017
+*  (C) COPYRIGHT AUTHORS, 2015 - 2018
 *
 *  TITLE:       EXTAPI.H
 *
-*  VERSION:     1.46
+*  VERSION:     1.70
 *
-*  DATE:        04 Mar 2017
+*  DATE:        30 Nov 2018
 *
-*  Header file for Windows 10 new API which we cannot statically link.
+*  Windows/Native API which we cannot statically link because have to support Windows 7
 *
 * THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
 * ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED
@@ -22,19 +22,32 @@ typedef NTSTATUS (NTAPI *pfnNtOpenPartition)(
     _Out_ PHANDLE PartitionHandle,
     _In_ ACCESS_MASK DesiredAccess,
     _In_ POBJECT_ATTRIBUTES ObjectAttributes
-);
+    );
 
 typedef NTSTATUS (NTAPI *pfnNtManagePartition)(
     _In_ HANDLE TargetHandle,
-    _In_ HANDLE SourceHandle,
+    _In_opt_ HANDLE SourceHandle,
     _In_ MEMORY_PARTITION_INFORMATION_CLASS PartitionInformationClass,
-    _Inout_ PVOID PartitionInformation,
-    _In_ SIZE_T PartitionInformationLength
-);
+    _In_ PVOID PartitionInformation,
+    _In_ ULONG PartitionInformationLength
+    );
+
+typedef BOOL (WINAPI *pfnIsImmersiveProcess)(
+    HANDLE hProcess
+    );
+
+typedef HWINSTA(NTAPI* pfnNtUserOpenWindowStation)(
+    _In_ POBJECT_ATTRIBUTES ObjectAttributes,
+    _In_ ACCESS_MASK DesiredAccess
+    );
+
+#define EXTAPI_ALL_MAPPED 3
 
 typedef struct _EXTENDED_API_SET {
+    ULONG NumberOfAPI;
     pfnNtOpenPartition NtOpenPartition;
-    pfnNtManagePartition NtManagePartition;
+    pfnNtUserOpenWindowStation NtUserOpenWindowStation;
+    pfnIsImmersiveProcess IsImmersiveProcess;
 } EXTENDED_API_SET, *PEXTENDED_API_SET;
 
 NTSTATUS ExApiSetInit(
@@ -42,3 +55,4 @@ NTSTATUS ExApiSetInit(
     );
 
 extern EXTENDED_API_SET g_ExtApiSet;
+

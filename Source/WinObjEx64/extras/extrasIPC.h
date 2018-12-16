@@ -1,14 +1,14 @@
 /*******************************************************************************
 *
-*  (C) COPYRIGHT AUTHORS, 2017
+*  (C) COPYRIGHT AUTHORS, 2017 - 2018
 *
 *  TITLE:       EXTRASIPC.H
 *
-*  VERSION:     1.46
+*  VERSION:     1.70
 *
-*  DATE:        09 Mar 2017
+*  DATE:        30 Nov 2018
 *
-*  Common header file for InterProcess Communication mecahisms dialog.
+*  Common header file for InterProcess Communication mechanisms dialog.
 *
 * THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
 * ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED
@@ -20,10 +20,10 @@
 
 typedef enum _IPC_DIALOG_MODE {
     IpcModeNamedPipes = 1,
-    IpcModeMailshots = 2
+    IpcModeMailSlots = 2,
+    IpcMaxMode
 } IPC_DIALOG_MODE;
 
 VOID extrasCreateIpcDialog(
     _In_ HWND hwndParent,
-    _In_ IPC_DIALOG_MODE Mode
-);
+    _In_ IPC_DIALOG_MODE Mode);
